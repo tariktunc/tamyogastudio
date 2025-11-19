@@ -1,33 +1,44 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- HELPER: Store Key Normalization ---
+// --- HELPER: Store Key Normalization & Logging ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
+    
+    // Hex Check: Only 0-9, A-F and even length
     const isHex = /^[0-9A-Fa-f]+$/.test(trimmedKey) && (trimmedKey.length % 2 === 0);
     
     if (isHex) {
         try {
-            return Buffer.from(trimmedKey, 'hex').toString('utf8');
+            const decoded = Buffer.from(trimmedKey, 'hex').toString('utf8');
+            console.log('[DEBUG] Store Key: HEX detected & decoded.');
+            return decoded;
         } catch (e) {
+            console.warn('[DEBUG] Store Key: Hex decode failed, using raw.');
             return trimmedKey;
         }
     }
+    console.log('[DEBUG] Store Key: Treated as PLAIN TEXT.');
     return trimmedKey;
 }
 
-// --- HELPER: Password Hashing (UPDATED LOGIC) ---
-function createHashedPassword(password, terminalIdForHash) {
-    // FIX: Using the ID exactly as provided in secrets (likely 8 digits), NOT forced padding.
-    // If the bank expects 8 digits here, the previous padding was breaking the hash.
-    const plain = password + terminalIdForHash;
+// --- HELPER: Password Hashing (SHA1) ---
+function createHashedPassword(password, terminalId) {
+    // FIX APPLIED: This function now receives the 9-digit ID.
+    // Double check padding just in case, but it should already be padded by the caller.
+    const terminalIdEffective = String(terminalId).padStart(9, '0');
+    const plain = password + terminalIdEffective;
     
+    console.log('------------------------------------------------');
     console.log('[DEBUG] HashedPassword Input (Plain):', plain);
+    console.log('------------------------------------------------');
+
     return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
 }
 
-// --- HELPER: Main 3D Hash ---
+// --- HELPER: Main 3D Hash Construction ---
 function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
+    // Sequence: TerminalID + OrderID + Amount + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
     const plainText = 
         terminalId +
         orderId +
@@ -39,39 +50,58 @@ function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnTy
         storeKey +
         hashedPassword;
 
-    console.log('[DEBUG] MAIN HASH STRING TO SIGN:', plainText);
+    console.log('------------------------------------------------');
+    console.log('[DEBUG] MAIN HASH STRING TO SIGN:');
+    console.log(plainText);
+    console.log('------------------------------------------------');
+
     return crypto.createHash('sha1').update(plainText, 'utf8').digest('hex').toUpperCase();
 }
 
+/**
+ * Callback Hash Verification
+ */
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const receivedHash = postBody.HASH || postBody.hash;
         const hashParams = postBody.hashparams || postBody.hashParams;
 
-        if (!receivedHash || !hashParams || !rawStoreKey) return false;
+        if (!receivedHash || !hashParams || !rawStoreKey) {
+            console.warn('[DEBUG] Callback Verify: Missing params.');
+            return false;
+        }
 
         const storeKey = normalizeStoreKey(rawStoreKey);
         const paramsList = String(hashParams).split(':').filter(Boolean);
         let plainText = '';
 
+        // Collect values based on hashparams list
         for (const param of paramsList) {
             const keyLower = param.toLowerCase();
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
             const val = foundKey ? postBody[foundKey] : '';
             plainText += val;
         }
+
         plainText += storeKey;
         
+        console.log('[DEBUG] Callback Verify String:', plainText);
+
         const calculatedHash = crypto.createHash('sha1').update(plainText, 'utf8').digest('base64');
-        return receivedHash === calculatedHash;
+        
+        const isValid = (receivedHash === calculatedHash);
+        console.log(`[DEBUG] Hash Match Result: ${isValid}`);
+        
+        return isValid;
     } catch (e) {
-        console.error('Verify Error:', e);
+        console.error('[DEBUG] Verify Error:', e);
         return false;
     }
 }
 
 // --- MAIN FUNCTION ---
+
 export async function buildPayHostingForm({
   orderId,
   amountMinor,
@@ -83,6 +113,7 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
+    // 1. Retrieve Secrets
     const [rawTerminalId, merchantId, password, rawStoreKey, provUserId, gatewayUrl] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
@@ -94,33 +125,37 @@ export async function buildPayHostingForm({
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    // 1. Terminal ID Logic
-    // We keep raw ID for password hashing, but pad it for the Request if needed.
-    const terminalIdRaw = String(rawTerminalId).trim(); 
-    const terminalIdPadded = terminalIdRaw.padStart(9, '0');
+    // 2. Terminal ID Logic (THE FIX)
+    // We verify the raw ID, then force 9-digit padding.
+    const terminalIdRaw = String(rawTerminalId).trim();
+    
+    // Ensure we send "010380183" (9 digits) to align with 3D_OOS_FULL requirements
+    const terminalIdToSend = terminalIdRaw.padStart(9, '0');
+    
+    console.log('------------------------------------------------');
+    console.log('[DEBUG] Terminal ID Check:');
+    console.log(`Raw (Secrets): "${terminalIdRaw}"`);
+    console.log(`Padded (Used for ALL Hashes): "${terminalIdToSend}"`);
+    console.log('------------------------------------------------');
 
-    // *** DECISION: Which one to send to the bank? ***
-    // Logs showed the bank returning "010..." (9 digits), so we stick to Padded for the Request.
-    const terminalIdToSend = terminalIdPadded;
-
-    console.log(`[DEBUG] Terminal IDs -> Raw: ${terminalIdRaw}, Padded: ${terminalIdPadded}`);
-
-    // 2. Format Data
+    // 3. Data Formatting
     const amountMajor = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
+    // Installment logic: send empty string if 0 or 1
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
     
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 3. Hash Generation
-    // *** FIX: Use RAW ID for Password Hash ***
-    const hashedPassword = createHashedPassword(password, terminalIdRaw);
+    // 4. Hash Generation
+    
+    // *** CRITICAL FIX HERE: Use terminalIdToSend (9 digits) for Password Hash ***
+    const hashedPassword = createHashedPassword(password, terminalIdToSend);
     
     const storeKey = normalizeStoreKey(rawStoreKey);
 
     const hash = createSecure3DHash({
-        terminalId: terminalIdToSend, // Use 9 digits for the main string
+        terminalId: terminalIdToSend, // Use 9 digits
         orderId,
         amount: amountMajor,
         okUrl,
@@ -131,16 +166,18 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
+    // 5. Endpoint
     const cleanBase = String(gatewayUrl || 'https://sanalposprov.garanti.com.tr').replace(/\/+$/, '');
     const actionUrl = `${cleanBase}/servlet/gt3dengine`;
 
+    // 6. Form Fields
     const formFields = {
         mode: 'PROD',
         apiversion: 'v0.01',
         terminalprovuserid: provUserId,
         terminaluserid: provUserId,
         terminalmerchantid: merchantId,
-        terminalid: terminalIdToSend,
+        terminalid: terminalIdToSend, // Bank receives 9 digits
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
