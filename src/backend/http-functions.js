@@ -5,7 +5,7 @@ import wixPaymentProviderBackend from 'wix-payment-provider-backend';
 import crypto from 'crypto';
 import { PAY_CSS } from 'public/pay-css.js';
 
-// Garanti Wrapper Imports
+// Garanti Wrapper Imports (Includes Hex Decoding Logic inside)
 import { buildPayHostingForm as buildGarantiForm, verifyCallbackHash as verifyGarantiHash, isApproved as isGarantiApproved } from 'backend/garanti-vpg-wrapper';
 
 
@@ -597,7 +597,7 @@ export async function get_akbankCallback(request) {
 }
 
 // =================================================================
-// GARANTI CALLBACK HANDLER (WITH KEY NORMALIZATION FIX)
+// GARANTI CALLBACK HANDLER (WITH HEX DECODING & KEY NORMALIZATION FIX)
 // =================================================================
 export async function post_garantiCallback(request) {
     try {
@@ -612,7 +612,7 @@ export async function post_garantiCallback(request) {
         }
 
         // ====================================================
-        // 2. KEY NORMALIZATION (FIX)
+        // 2. KEY NORMALIZATION (LOWERCASE FIX)
         // Garanti sends 'HashParams' or 'hashparams' unpredictably.
         // We lowercase all keys to ensure our wrapper can find the data.
         // ====================================================
@@ -635,7 +635,7 @@ export async function post_garantiCallback(request) {
         // 3. Verify Hash (Using normalized object)
         let hashOk = false;
         try {
-            // verifyGarantiHash now checks .hashparams (lowercase) successfully
+            // verifyGarantiHash handles the HEX decoding internally now
             hashOk = await verifyGarantiHash(normalizedPost);
         } catch (e) {
             console.error('post_garantiCallback verifyGarantiHash critical error:', e);
