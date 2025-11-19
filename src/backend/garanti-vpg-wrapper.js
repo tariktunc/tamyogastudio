@@ -1,11 +1,10 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- HELPER: Store Key Normalization & Logging ---
+// --- HELPER: Store Key Normalization ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
-    console.log('[DEBUG] Raw Store Key (First 4 chars):', trimmedKey.substring(0, 4) + '...');
-
+    
     // Hex Check: Only 0-9, A-F and even length
     const isHex = /^[0-9A-Fa-f]+$/.test(trimmedKey) && (trimmedKey.length % 2 === 0);
     
@@ -25,7 +24,7 @@ function normalizeStoreKey(key) {
 
 // --- HELPER: Password Hashing (SHA1) ---
 function createHashedPassword(password, terminalId) {
-    // FIX APPLIED: This function now receives the 9-digit ID (padded) from the caller.
+    // FIX APPLIED: Terminal ID'nin 9 haneli (padded) versiyonu kullanılır
     const terminalIdEffective = String(terminalId).padStart(9, '0');
     const plain = password + terminalIdEffective;
     
@@ -38,11 +37,11 @@ function createHashedPassword(password, terminalId) {
 
 // --- HELPER: Main 3D Hash Construction ---
 function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
-    // Sequence: TerminalID + OrderID + Amount + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
+    // Sıralama: TerminalID + OrderID + Amount + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
     const plainText = 
         terminalId +
         orderId +
-        amount +
+        amount + // CRITICAL: Kurus/Minor unit olarak eklendi
         okUrl +
         failUrl +
         txnType +
@@ -76,13 +75,13 @@ export async function verifyCallbackHash(postBody) {
         const paramsList = String(hashParams).split(':').filter(Boolean);
         let plainText = '';
 
-        // Collect values based on hashparams list
         for (const param of paramsList) {
             const keyLower = param.toLowerCase();
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
             const val = foundKey ? postBody[foundKey] : '';
             plainText += val;
         }
+
         plainText += storeKey;
         
         console.log('[DEBUG] Callback Verify String:', plainText);
@@ -103,7 +102,7 @@ export async function verifyCallbackHash(postBody) {
 
 export async function buildPayHostingForm({
   orderId,
-  amountMinor,
+  amountMinor, // Kurus cinsinden geliyor (Örn: 290000)
   currency = '949',
   okUrl,
   failUrl,
@@ -112,7 +111,7 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
-    // 1. Secret'ları Çek (GARANTI_PROVOOS_ID kaldırıldı)
+    // 1. Secret'ları Çek
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
@@ -121,23 +120,22 @@ export async function buildPayHostingForm({
         getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
-    // 2. Provision User ID'yi Hardcode et
+    // 2. Provision User ID'yi Hardcode et (Önceki karara göre)
     const provUserId = "PROVOOS";
     
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    // 3. Terminal ID Logic (Konsolide edildi)
+    // 3. Terminal ID Logic (9-Hane Düzeltmesi)
     const terminalIdRaw = String(rawTerminalId).trim();
-    const terminalIdToSend = terminalIdRaw.padStart(9, '0');
+    const terminalIdToSend = terminalIdRaw.padStart(9, '0'); // 010380183
     
-    console.log('------------------------------------------------');
-    console.log('[DEBUG] Terminal ID Check:');
-    console.log(`Raw (Secrets): "${terminalIdRaw}"`);
-    console.log(`Padded (Used for ALL Hashes): "${terminalIdToSend}"`);
-    console.log('------------------------------------------------');
+    console.log('[DEBUG] Terminal IDs -> Raw:', terminalIdRaw, 'Padded:', terminalIdToSend);
 
     // 4. Data Formatting
-    const amountMajor = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
+    // KRİTİK FIX: amountMinor (kuruş) doğrudan tamsayı stringi olarak kullanılır.
+    const amountClean = String(amountMinor); 
+
+    // Taksit boşsa, '1' ise veya '0' ise hash hesaplamasına boş string olarak girer
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
     
     const now = new Date();
@@ -154,7 +152,7 @@ export async function buildPayHostingForm({
     const hash = createSecure3DHash({
         terminalId: terminalIdToSend, // 9 digits used
         orderId,
-        amount: amountMajor,
+        amount: amountClean, // Tutar kuruş cinsinden (Örn: "290000")
         okUrl,
         failUrl,
         txnType,
@@ -171,14 +169,14 @@ export async function buildPayHostingForm({
     const formFields = {
         mode: 'PROD',
         apiversion: 'v0.01',
-        terminalprovuserid: provUserId, // "PROVOOS"
-        terminaluserid: provUserId,     // "PROVOOS"
+        terminalprovuserid: provUserId, // Hardcoded PROVOOS
+        terminaluserid: provUserId,     // Hardcoded PROVOOS
         terminalmerchantid: merchantId,
         terminalid: terminalIdToSend, 
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        txnamount: amountMajor,
+        txnamount: amountClean, // CRITICAL FIX: Form alanına tamsayı kuruş (minor unit) gönderilir
         txncurrencycode: currency,
         txntype: txnType,
         txninstallmentcount: taksit,
