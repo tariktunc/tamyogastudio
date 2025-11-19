@@ -1,45 +1,33 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- HELPER: Store Key Normalization & Logging ---
+// --- HELPER: Store Key Normalization ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
-    console.log('[DEBUG] Raw Store Key (First 4 chars):', trimmedKey.substring(0, 4) + '...');
-
-    // Hex Kontrolü: Sadece 0-9, A-F ve çift uzunluk
     const isHex = /^[0-9A-Fa-f]+$/.test(trimmedKey) && (trimmedKey.length % 2 === 0);
     
     if (isHex) {
         try {
-            const decoded = Buffer.from(trimmedKey, 'hex').toString('utf8');
-            console.log('[DEBUG] Store Key: HEX detected & decoded.');
-            return decoded;
+            return Buffer.from(trimmedKey, 'hex').toString('utf8');
         } catch (e) {
-            console.warn('[DEBUG] Store Key: Hex decode failed, using raw.');
             return trimmedKey;
         }
     }
-    console.log('[DEBUG] Store Key: Treated as PLAIN TEXT.');
     return trimmedKey;
 }
 
-// --- HELPER: Password Hashing (SHA1) ---
-function createHashedPassword(password, terminalId) {
-    // Terminal ID her zaman 9 hane olmalı (Solu sıfır dolgulu)
-    const terminalIdPadded = String(terminalId).padStart(9, '0');
-    const plain = password + terminalIdPadded;
+// --- HELPER: Password Hashing (UPDATED LOGIC) ---
+function createHashedPassword(password, terminalIdForHash) {
+    // FIX: Using the ID exactly as provided in secrets (likely 8 digits), NOT forced padding.
+    // If the bank expects 8 digits here, the previous padding was breaking the hash.
+    const plain = password + terminalIdForHash;
     
-    // KRİTİK LOG 1: Şifre Hashlenmeden önceki hali
-    console.log('------------------------------------------------');
     console.log('[DEBUG] HashedPassword Input (Plain):', plain);
-    console.log('------------------------------------------------');
-
     return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
 }
 
-// --- HELPER: Main 3D Hash Construction ---
+// --- HELPER: Main 3D Hash ---
 function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
-    // Sıralama: TerminalID + OrderID + Amount + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
     const plainText = 
         terminalId +
         orderId +
@@ -51,60 +39,39 @@ function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnTy
         storeKey +
         hashedPassword;
 
-    // KRİTİK LOG 2: Ana Hash String'i (Banka ile burası eşleşmeli)
-    console.log('------------------------------------------------');
-    console.log('[DEBUG] MAIN HASH STRING TO SIGN:');
-    console.log(plainText);
-    console.log('------------------------------------------------');
-
+    console.log('[DEBUG] MAIN HASH STRING TO SIGN:', plainText);
     return crypto.createHash('sha1').update(plainText, 'utf8').digest('hex').toUpperCase();
 }
 
-/**
- * Callback Hash Doğrulama (Debug Loglu)
- */
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const receivedHash = postBody.HASH || postBody.hash;
         const hashParams = postBody.hashparams || postBody.hashParams;
 
-        if (!receivedHash || !hashParams || !rawStoreKey) {
-            console.warn('[DEBUG] Callback Verify: Eksik parametreler.');
-            return false;
-        }
+        if (!receivedHash || !hashParams || !rawStoreKey) return false;
 
         const storeKey = normalizeStoreKey(rawStoreKey);
         const paramsList = String(hashParams).split(':').filter(Boolean);
         let plainText = '';
 
-        // HashParams sırasına göre değerleri topla
         for (const param of paramsList) {
             const keyLower = param.toLowerCase();
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
             const val = foundKey ? postBody[foundKey] : '';
             plainText += val;
         }
-
         plainText += storeKey;
         
-        // KRİTİK LOG 3: Dönüş Hash String'i
-        console.log('[DEBUG] Callback Verify String:', plainText);
-
         const calculatedHash = crypto.createHash('sha1').update(plainText, 'utf8').digest('base64');
-        
-        const isValid = (receivedHash === calculatedHash);
-        console.log(`[DEBUG] Hash Match Result: ${isValid} (Rec: ${receivedHash} vs Calc: ${calculatedHash})`);
-        
-        return isValid;
+        return receivedHash === calculatedHash;
     } catch (e) {
-        console.error('[DEBUG] Verify Error:', e);
+        console.error('Verify Error:', e);
         return false;
     }
 }
 
-// --- ANA FONKSİYON ---
-
+// --- MAIN FUNCTION ---
 export async function buildPayHostingForm({
   orderId,
   amountMinor,
@@ -116,7 +83,6 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
-    // 1. Secret'ları Çek
     const [rawTerminalId, merchantId, password, rawStoreKey, provUserId, gatewayUrl] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
@@ -126,33 +92,35 @@ export async function buildPayHostingForm({
         getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
-    if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secretları eksik!');
+    if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    // 2. Terminal ID Kontrolü (Loglu)
-    // Garanti genellikle 9 hane ister (001234567). Secret'ta 7 veya 8 hane olabilir.
-    const terminalId = String(rawTerminalId).padStart(9, '0');
-    
-    console.log('------------------------------------------------');
-    console.log('[DEBUG] Terminal ID Check:');
-    console.log(`Raw (Secrets): "${rawTerminalId}"`);
-    console.log(`Padded (Used): "${terminalId}"`);
-    console.log('------------------------------------------------');
+    // 1. Terminal ID Logic
+    // We keep raw ID for password hashing, but pad it for the Request if needed.
+    const terminalIdRaw = String(rawTerminalId).trim(); 
+    const terminalIdPadded = terminalIdRaw.padStart(9, '0');
 
-    // 3. Veri Formatlaması
+    // *** DECISION: Which one to send to the bank? ***
+    // Logs showed the bank returning "010..." (9 digits), so we stick to Padded for the Request.
+    const terminalIdToSend = terminalIdPadded;
+
+    console.log(`[DEBUG] Terminal IDs -> Raw: ${terminalIdRaw}, Padded: ${terminalIdPadded}`);
+
+    // 2. Format Data
     const amountMajor = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
-    // Taksit boşsa, '1' ise veya '0' ise hash hesaplamasına boş string olarak girer
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
     
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 4. Hash Hesaplama Adımları
-    const hashedPassword = createHashedPassword(password, terminalId);
+    // 3. Hash Generation
+    // *** FIX: Use RAW ID for Password Hash ***
+    const hashedPassword = createHashedPassword(password, terminalIdRaw);
+    
     const storeKey = normalizeStoreKey(rawStoreKey);
 
     const hash = createSecure3DHash({
-        terminalId, // Padded (9 digit) gönderiliyor
+        terminalId: terminalIdToSend, // Use 9 digits for the main string
         orderId,
         amount: amountMajor,
         okUrl,
@@ -163,18 +131,16 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    // 5. Endpoint
     const cleanBase = String(gatewayUrl || 'https://sanalposprov.garanti.com.tr').replace(/\/+$/, '');
     const actionUrl = `${cleanBase}/servlet/gt3dengine`;
 
-    // 6. Form Alanları
     const formFields = {
         mode: 'PROD',
         apiversion: 'v0.01',
         terminalprovuserid: provUserId,
         terminaluserid: provUserId,
         terminalmerchantid: merchantId,
-        terminalid: terminalId, // Bankaya padded versiyonu gönderiyoruz
+        terminalid: terminalIdToSend,
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
