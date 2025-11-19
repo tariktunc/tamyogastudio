@@ -106,7 +106,7 @@ export async function buildPayHostingForm({
         txninstallmentcount: taksit,
         successurl: okUrl,
         errorurl: failUrl,
-        secure3dsecuritylevel: '3D_OOS',
+        secure3dsecuritylevel: '3D_OOS_PAY',
         secure3dhash: hash,
         customeripaddress: customerIp,
         customeremailaddress: customerEmail,
