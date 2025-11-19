@@ -10,7 +10,7 @@ function createHashedPassword(password, terminalId) {
 function createSecure3DHash({
     terminalId,
     orderId,
-    amount,
+    amount, 
     okUrl,
     failUrl,
     txnType,
@@ -18,109 +18,111 @@ function createSecure3DHash({
     storeKey,
     hashedPassword
 }) {
-    const plainText =
+    // DÜZELTME: Taksit sayısı boşsa hash'e dahil edilmemeli mi?
+    // PHP örneğinde: $HashData = ... . $strType . $strInstallmentCount . $strStoreKey ...
+    // Eğer $strInstallmentCount = "" ise, type ve storekey bitişik olur.
+    // Sizin kodunuz da bunu yapıyor. Bu doğru görünüyor.
+    
+    const plainText = 
         terminalId +
         orderId +
         amount +
         okUrl +
         failUrl +
         txnType +
-        installments +
+        installments + 
         storeKey +
         hashedPassword;
 
-    // Debug için log (Tutarın noktasız geldiğini buradan teyit edeceğiz)
-    console.log('Garanti Hash String (Debug):', plainText);
+    console.log('Garanti Hash String (Debug):', plainText); 
     return crypto.createHash('sha1').update(plainText, 'utf8').digest('hex').toUpperCase();
 }
 
 function resolveEst3DUrl(gatewayBase) {
-    const base = String(gatewayBase || '').replace(/\/+$/, '');
-    if (!base) throw new Error('Garanti BBVA gateway base eksik.');
-    return `${base}/servlet/gt3dengine`;
+  const base = String(gatewayBase || '').replace(/\/+$/, '');
+  if (!base) throw new Error('Garanti BBVA gateway base eksik.');
+  return `${base}/servlet/gt3dengine`; 
 }
 
 export async function buildPayHostingForm({
-    orderId,
-    amountMinor,
-    currency = '949',
-    okUrl,
-    failUrl,
-    customerIp,
-    installments = '',
-    txnType = 'sales'
+  orderId,
+  amountMinor,
+  currency = '949',
+  okUrl,
+  failUrl,
+  customerIp,
+  installments = '', 
+  txnType = 'sales' 
 }) {
-    const terminalId = await getSecret('GARANTI_TERMINAL_ID');
-    const gatewayBase = await getSecret('GARANTI_CALLBACK_PATH');
-    const password = await getSecret('GARANTI_TERMINAL_PASSWORD');
-    const merchantId = await getSecret('GARANTI_STORE_NO');
-    const storeKey = await getSecret('GARANTI_ENC_KEY');
-    const provUserId = await getSecret('GARANTI_PROVOOS_ID');
-    const userId = await getSecret('GARANTI_USER_ID');
+  const terminalId = await getSecret('GARANTI_TERMINAL_ID');
+  const gatewayBase = await getSecret('GARANTI_CALLBACK_PATH'); 
+  const password = await getSecret('GARANTI_TERMINAL_PASSWORD'); 
+  const merchantId = await getSecret('GARANTI_STORE_NO');
+  const storeKey = await getSecret('GARANTI_ENC_KEY'); 
+  const provUserId = await getSecret('GARANTI_PROVOOS_ID');
+  // DÜZELTME: UserID'yi secret'tan değil, provUserId ile aynı yapalım veya boş bırakalım.
+  // Bazı OOS entegrasyonlarında bu alanın PROVOOS olması gerekebilir.
+  const userId = provUserId; 
 
-    if (!terminalId || !gatewayBase || !password || !merchantId || !storeKey || !provUserId || !userId) {
-        console.error('Garanti BBVA secret bilgileri eksik.');
-        throw new Error('Garanti BBVA yapılandırma hatası.');
-    }
+  if (!terminalId || !gatewayBase || !password || !merchantId || !storeKey || !provUserId) {
+      console.error('Garanti BBVA secret bilgileri eksik.');
+      throw new Error('Garanti BBVA yapılandırma hatası.');
+  }
 
-    if (!customerIp) {
-        console.error('Garanti BBVA: Müşteri IP eksik!');
-        throw new Error('Garanti IP hatası.');
-    }
+  if (!customerIp) {
+      console.error('Garanti BBVA: Müşteri IP eksik!');
+      throw new Error('Garanti IP hatası.');
+  }
 
-    // === DÜZELTME BURADA ===
-    // Garanti Bankası tutarı Kuruş Ayracı Olmadan (Örn: 1.00 TL -> "100") ister.
-    // Wix zaten bize 'amountMinor'ı (örn: 85000) veriyor.
-    // Bunu 100'e bölüp string'e çevirmiyoruz, direkt kullanıyoruz.
-    const amountForBank = String(amountMinor);
-    // ======================
+  const amountForBank = String(amountMinor); 
+  
+  // DÜZELTME: Taksit sayısı "" (boş string) olarak kalsın.
+  const taksit = installments || ''; 
 
-    const taksit = installments || '';
+  const hashedPassword = createHashedPassword(password, terminalId);
+  
+  const now = new Date();
+  const p = (n, len = 2) => String(n).padStart(len, '0');
+  const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    const hashedPassword = createHashedPassword(password, terminalId);
+  const hash = createSecure3DHash({
+      terminalId,
+      orderId,
+      amount: amountForBank, 
+      okUrl: okUrl, 
+      failUrl: failUrl, 
+      txnType,
+      installments: taksit,
+      storeKey: storeKey,
+      hashedPassword
+  });
 
-    const now = new Date();
-    const p = (n, len = 2) => String(n).padStart(len, '0');
-    const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const actionUrl = resolveEst3DUrl(gatewayBase);
+  const customerEmail = 'dummy@tamyogastudio.com'; 
 
-    const hash = createSecure3DHash({
-        terminalId,
-        orderId,
-        amount: amountForBank, // Noktasız tutar (örn: "85000")
-        okUrl: okUrl,
-        failUrl: failUrl,
-        txnType,
-        installments: taksit,
-        storeKey: storeKey,
-        hashedPassword
-    });
+  const formFields = {
+    apiversion: 'v0.01', 
+    mode: 'PROD',
+    lang: 'tr',
+    terminalid: terminalId,
+    terminalmerchantid: merchantId,
+    terminaluserid: userId, // Güncellendi
+    terminalprovuserid: provUserId,
+    orderid: orderId,
+    txnamount: amountForBank,
+    txncurrencycode: currency,
+    txntype: txnType,
+    txninstallmentcount: taksit,
+    successurl: okUrl,
+    errorurl: failUrl,
+    secure3dsecuritylevel: '3D_OOS_FULL', 
+    secure3dhash: hash,
+    customeripaddress: customerIp,
+    customeremailaddress: customerEmail,
+    txntimestamp: timestamp
+  };
 
-    const actionUrl = resolveEst3DUrl(gatewayBase);
-    const customerEmail = 'dummy@tamyogastudio.com';
-
-    const formFields = {
-        apiversion: 'v0.01',
-        mode: 'PROD',
-        lang: 'tr',
-        terminalid: terminalId,
-        terminalmerchantid: merchantId,
-        terminaluserid: userId,
-        terminalprovuserid: provUserId,
-        orderid: orderId,
-        txnamount: amountForBank, // Noktasız tutar
-        txncurrencycode: currency,
-        txntype: txnType,
-        txninstallmentcount: taksit,
-        successurl: okUrl,
-        errorurl: failUrl,
-        secure3dsecuritylevel: '3D_OOS_FULL',
-        secure3dhash: hash,
-        customeripaddress: customerIp,
-        customeremailaddress: customerEmail,
-        txntimestamp: timestamp
-    };
-
-    return { actionUrl, formFields };
+  return { actionUrl, formFields };
 }
 
 export async function verifyCallbackHash(postBody) {
@@ -131,12 +133,12 @@ export async function verifyCallbackHash(postBody) {
 
         if (!receivedHash || !hashParams) {
             console.warn('Garanti verifyCallbackHash: Hash parametreleri eksik.');
-            return false;
+            return false; 
         }
 
         if (!storeKey) {
-            console.warn('Garanti verifyCallbackHash: StoreKey bulunamadı.');
-            return false;
+             console.warn('Garanti verifyCallbackHash: StoreKey bulunamadı.');
+             return false;
         }
 
         const params = String(hashParams).split(':').filter(Boolean);
@@ -150,7 +152,7 @@ export async function verifyCallbackHash(postBody) {
         plainText += storeKey;
 
         const hashCalculated = crypto.createHash('sha1').update(plainText, 'utf8').digest('base64');
-
+        
         const ok = receivedHash === hashCalculated;
 
         if (!ok) {
