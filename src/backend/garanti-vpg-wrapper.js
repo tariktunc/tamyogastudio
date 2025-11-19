@@ -1,14 +1,12 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// Terminal Şifresi Hashleme (SHA1 + HEX + Upper)
 function createHashedPassword(password, terminalId) {
     const terminalIdPadded = String(terminalId).padStart(9, '0');
     const plain = password + terminalIdPadded;
     return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
 }
 
-// 3D Secure Hash Oluşturma (PHP 3DOOSPay.php Mantığı)
 function createSecure3DHash({
     terminalId,
     orderId,
@@ -20,7 +18,6 @@ function createSecure3DHash({
     storeKey,
     hashedPassword
 }) {
-    // PHP Formülü: TerminalID + OrderID + Amount + SuccessURL + ErrorURL + Type + Installment + StoreKey + SecurityData
     const plainText = 
         terminalId +
         orderId +
@@ -32,12 +29,13 @@ function createSecure3DHash({
         storeKey +
         hashedPassword;
 
-    console.log('HASH DEBUG (Plain):', plainText); // Loglarda kontrol için
+    console.log('Garanti Hash String (Debug):', plainText);
     return crypto.createHash('sha1').update(plainText, 'utf8').digest('hex').toUpperCase();
 }
 
 function resolveEst3DUrl(gatewayBase) {
     const base = String(gatewayBase || '').replace(/\/+$/, '');
+    if (!base) throw new Error('Garanti BBVA gateway base eksik.');
     return `${base}/servlet/gt3dengine`;
 }
 
@@ -51,45 +49,42 @@ export async function buildPayHostingForm({
     installments = '',
     txnType = 'sales'
 }) {
-    // Secretları çek
     const terminalId = await getSecret('GARANTI_TERMINAL_ID');
     const gatewayBase = await getSecret('GARANTI_CALLBACK_PATH');
-    const password = await getSecret('GARANTI_TERMINAL_PASSWORD'); // Gvp+2024Pos
+    const password = await getSecret('GARANTI_TERMINAL_PASSWORD');
     const merchantId = await getSecret('GARANTI_STORE_NO');
-    const storeKey = await getSecret('GARANTI_ENC_KEY'); // GvP2024TamYogaSecureKy9x OLMALI
+    const storeKey = await getSecret('GARANTI_ENC_KEY');
     const provUserId = await getSecret('GARANTI_PROVOOS_ID');
-    
-    // OOS modelinde UserID genellikle PROVOOS'tur.
     const userId = provUserId; 
 
-    if (!terminalId || !gatewayBase || !password || !storeKey) {
-        throw new Error('Garanti Secret Eksik!');
+    if (!terminalId || !gatewayBase || !password || !merchantId || !storeKey || !provUserId) {
+        console.error('Garanti BBVA secret bilgileri eksik.');
+        throw new Error('Garanti BBVA yapılandırma hatası.');
     }
 
-    // Tutar: 1.00 TL -> "100" (Kuruş ayracı yok, string)
-    const amountForBank = String(amountMinor);
+    if (!customerIp) {
+        console.error('Garanti BBVA: Müşteri IP eksik!');
+        throw new Error('Garanti IP hatası.');
+    }
 
-    // Taksit: Yoksa boş string
+    const amountForBank = String(amountMinor);
     const taksit = installments || '';
 
-    // 1. Adım: Password Hash
     const hashedPassword = createHashedPassword(password, terminalId);
 
-    // Zaman Damgası (Sadece forma eklenir, Hash'e katılmaz!)
     const now = new Date();
     const p = (n, len = 2) => String(n).padStart(len, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 2. Adım: Ana Hash
     const hash = createSecure3DHash({
         terminalId,
         orderId,
         amount: amountForBank,
-        okUrl,
-        failUrl,
+        okUrl: okUrl,
+        failUrl: failUrl,
         txnType,
         installments: taksit,
-        storeKey,
+        storeKey: storeKey,
         hashedPassword
     });
 
@@ -121,34 +116,32 @@ export async function buildPayHostingForm({
     return { actionUrl, formFields };
 }
 
-// Callback Doğrulama (Base64 + StoreKey)
 export async function verifyCallbackHash(postBody) {
     try {
         const storeKey = await getSecret('GARANTI_ENC_KEY');
         const receivedHash = postBody.HASH || postBody.hash;
         const hashParams = postBody.hashparams;
 
-        if (!receivedHash || !hashParams || !storeKey) return false;
+        if (!receivedHash || !hashParams || !storeKey) {
+            console.warn('Garanti verifyCallbackHash: Eksik parametreler.');
+            return false;
+        }
 
-        // PHP Gate3D dosyasına göre ayırıcı ':'
         const params = String(hashParams).split(':').filter(Boolean);
         let plainText = '';
 
         for (const p of params) {
-            // Gelen parametreleri birleştir
-            const val = postBody[p] || postBody[String(p).toLowerCase()] || '';
-            plainText += val;
+            const value = postBody[p] || postBody[String(p).toLowerCase()] || '';
+            plainText += value;
         }
 
-        // Sona StoreKey ekle
         plainText += storeKey;
 
-        // SHA1 -> Base64
         const hashCalculated = crypto.createHash('sha1').update(plainText, 'utf8').digest('base64');
         
         return receivedHash === hashCalculated;
     } catch (e) {
-        console.error('Verify Error', e);
+        console.error('Garanti verifyCallbackHash: Kritik hata', e);
         return false;
     }
 }
