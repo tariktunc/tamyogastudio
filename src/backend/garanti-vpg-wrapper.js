@@ -4,7 +4,8 @@ import crypto from 'crypto';
 // --- HELPER: Store Key Normalization & Logging ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
-    
+    console.log('[DEBUG] Raw Store Key (First 4 chars):', trimmedKey.substring(0, 4) + '...');
+
     // Hex Check: Only 0-9, A-F and even length
     const isHex = /^[0-9A-Fa-f]+$/.test(trimmedKey) && (trimmedKey.length % 2 === 0);
     
@@ -24,8 +25,7 @@ function normalizeStoreKey(key) {
 
 // --- HELPER: Password Hashing (SHA1) ---
 function createHashedPassword(password, terminalId) {
-    // FIX APPLIED: This function now receives the 9-digit ID.
-    // Double check padding just in case, but it should already be padded by the caller.
+    // FIX APPLIED: This function now receives the 9-digit ID (padded) from the caller.
     const terminalIdEffective = String(terminalId).padStart(9, '0');
     const plain = password + terminalIdEffective;
     
@@ -83,7 +83,6 @@ export async function verifyCallbackHash(postBody) {
             const val = foundKey ? postBody[foundKey] : '';
             plainText += val;
         }
-
         plainText += storeKey;
         
         console.log('[DEBUG] Callback Verify String:', plainText);
@@ -113,23 +112,22 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
-    // 1. Retrieve Secrets
-    const [rawTerminalId, merchantId, password, rawStoreKey, provUserId, gatewayUrl] = await Promise.all([
+    // 1. Secret'ları Çek (GARANTI_PROVOOS_ID kaldırıldı)
+    const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
         getSecret('GARANTI_TERMINAL_PASSWORD'),
         getSecret('GARANTI_ENC_KEY'),
-        getSecret('GARANTI_PROVOOS_ID'),
         getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
+    // 2. Provision User ID'yi Hardcode et
+    const provUserId = "PROVOOS";
+    
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    // 2. Terminal ID Logic (THE FIX)
-    // We verify the raw ID, then force 9-digit padding.
+    // 3. Terminal ID Logic (Konsolide edildi)
     const terminalIdRaw = String(rawTerminalId).trim();
-    
-    // Ensure we send "010380183" (9 digits) to align with 3D_OOS_FULL requirements
     const terminalIdToSend = terminalIdRaw.padStart(9, '0');
     
     console.log('------------------------------------------------');
@@ -138,24 +136,23 @@ export async function buildPayHostingForm({
     console.log(`Padded (Used for ALL Hashes): "${terminalIdToSend}"`);
     console.log('------------------------------------------------');
 
-    // 3. Data Formatting
+    // 4. Data Formatting
     const amountMajor = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
-    // Installment logic: send empty string if 0 or 1
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
     
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 4. Hash Generation
-    
-    // *** CRITICAL FIX HERE: Use terminalIdToSend (9 digits) for Password Hash ***
+    // 5. Hash Generation
+    // Password Hash (9 digits used)
     const hashedPassword = createHashedPassword(password, terminalIdToSend);
     
+    // Store Key Decode
     const storeKey = normalizeStoreKey(rawStoreKey);
 
     const hash = createSecure3DHash({
-        terminalId: terminalIdToSend, // Use 9 digits
+        terminalId: terminalIdToSend, // 9 digits used
         orderId,
         amount: amountMajor,
         okUrl,
@@ -166,18 +163,18 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    // 5. Endpoint
+    // 6. Endpoint
     const cleanBase = String(gatewayUrl || 'https://sanalposprov.garanti.com.tr').replace(/\/+$/, '');
     const actionUrl = `${cleanBase}/servlet/gt3dengine`;
 
-    // 6. Form Fields
+    // 7. Form Fields
     const formFields = {
         mode: 'PROD',
         apiversion: 'v0.01',
-        terminalprovuserid: provUserId,
-        terminaluserid: provUserId,
+        terminalprovuserid: provUserId, // "PROVOOS"
+        terminaluserid: provUserId,     // "PROVOOS"
         terminalmerchantid: merchantId,
-        terminalid: terminalIdToSend, // Bank receives 9 digits
+        terminalid: terminalIdToSend, 
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
