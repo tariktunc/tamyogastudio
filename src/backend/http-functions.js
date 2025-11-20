@@ -6,7 +6,9 @@ import { PAY_CSS } from 'public/pay-css.js';
 import * as AkbankService from 'backend/akbank-service';
 import * as GarantiService from 'backend/garanti-service';
 
-// CSS endpoint
+// ===============================
+// CSS endpoint (pay modal styles)
+// ===============================
 export function get_paycss() {
   return ok({
     headers: {
@@ -17,7 +19,9 @@ export function get_paycss() {
   });
 }
 
-// Akbank routes
+// ===============================
+// AKBANK ROUTES
+// ===============================
 export function get_payRedirect(request) {
   return AkbankService.redirect(request);
 }
@@ -30,7 +34,9 @@ export function get_akbankCallback(request) {
   return AkbankService.callback(request);
 }
 
-// Garanti routes
+// ===============================
+// GARANTI ROUTES
+// ===============================
 export function get_garantiRedirect(request) {
   return GarantiService.redirect(request);
 }
