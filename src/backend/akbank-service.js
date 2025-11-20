@@ -95,7 +95,7 @@ function mapHostMsg(code) {
 
 function redirectOnlyHtmlTop(target) {
   const safe = String(target || '/');
-  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yönlendiriliyor...</title><link rel="stylesheet" href="/_functions/paycss"></head><body id="akb-body"><div class="wrap" id="akb-wrap"><div class="card" id="akb-card-alert" role="alert" aria-live="polite"><h2 id="akb-close-title">Yönlendiriliyor...</h2></div></div><script>try{window.top.location.replace(${JSON.stringify(safe)});}catch(e){location.href=${JSON.stringify(safe)};}</script><noscript><meta http-equiv="refresh" content="0;url=${safe}"></noscript></body></html>`;
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yönlendiriliyor...</title><link rel="stylesheet" href="/_functions/paycss"></head><body id="akb-body"><div class="wrap" id="akb-wrap"><div class="card" id="akb-card-alert" role="alert" aria-live="polite"><h2 id="akb-close-title">PENCEREYİ KAPATIN</h2></div></div><script>try{window.top.location.replace(${JSON.stringify(safe)});}catch(e){location.href=${JSON.stringify(safe)};}</script><noscript><meta http-equiv="refresh" content="0;url=${safe}"></noscript></body></html>`;
 }
 
 function autoCloseHtml({ redirect = '/' } = {}) {
