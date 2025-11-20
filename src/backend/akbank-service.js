@@ -270,7 +270,7 @@ export async function redirect(request) {
         f.addEventListener('submit',function(e){
             if(sent){e.preventDefault();return;}
             sent=true;
-            try{btn.setAttribute('disabled','disabled');btn.textContent='Yönlendiriliyor…';}catch(e){}
+            try{btn.setAttribute('disabled','disabled');btn.textContent='PENCEREYİ KAPATIN';}catch(e){}
         },false);
         btn.addEventListener('click',function(){ try{ f.requestSubmit ? f.requestSubmit() : f.submit(); }catch(e){} });
         var cancelLinks=document.querySelectorAll('a[aria-label="İptal"]');
