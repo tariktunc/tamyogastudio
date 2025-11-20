@@ -1,15 +1,12 @@
 // backend/http-functions.js
-
-import { ok, badRequest } from 'wix-http-functions';
+import { ok } from 'wix-http-functions';
 import { PAY_CSS } from 'public/pay-css.js';
 
-// === SERVICE IMPORTS ===
-import * as AkbankService from 'backend/akbank-service.js';
-import * as GarantiService from 'backend/garanti-service.js';
+// Service imports
+import * as AkbankService from 'backend/akbank-service';
+import * as GarantiService from 'backend/garanti-service';
 
-// =====================================================
-// STATIC CSS ENDPOINT
-// =====================================================
+// CSS endpoint
 export function get_paycss() {
   return ok({
     headers: {
@@ -20,9 +17,7 @@ export function get_paycss() {
   });
 }
 
-// =====================================================
-// === AKBANK ROUTERS ==================================
-// =====================================================
+// Akbank routes
 export function get_payRedirect(request) {
   return AkbankService.redirect(request);
 }
@@ -35,9 +30,7 @@ export function get_akbankCallback(request) {
   return AkbankService.callback(request);
 }
 
-// =====================================================
-// === GARANTI ROUTERS ================================
-// =====================================================
+// Garanti routes
 export function get_garantiRedirect(request) {
   return GarantiService.redirect(request);
 }
