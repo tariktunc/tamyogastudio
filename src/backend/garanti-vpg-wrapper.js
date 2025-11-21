@@ -21,7 +21,7 @@ function createHashedPassword(password, terminalId) {
         .toUpperCase();
 }
 
-// [ANA HASH]: SHA512(8 Haneli TerminalID + ... + Taksit(0) + ... + StoreKey + HashedPass)
+// [ANA HASH]: SHA512(8 Haneli TerminalID + ... + Taksit + ... + StoreKey + HashedPass)
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -82,8 +82,14 @@ export async function buildPayHostingForm({
     // Para Birimi: 949
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // TAKSİT AYARI: Boş, null veya 1 ise "0" gönder.
-    const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '0';
+    // [DÜZELTME BURADA]: HTML Dokümanına göre Peşin işlemde "0" DEĞİL, BOŞ STRING "" gitmeli.
+    // Eğer installments yoksa, "0" ise veya "1" ise -> "" (Boş) gönder.
+    // Eğer "6" ise -> "6" gönder.
+    let taksit = '';
+    if (installments && installments !== '0' && installments !== '1') {
+        taksit = String(installments);
+    }
+    // Aksi halde taksit = '' (boş string) kalır.
 
     const typeStr = txnType || 'sales';
 
@@ -95,7 +101,8 @@ export async function buildPayHostingForm({
     // 1. Şifre Hash (9 Haneli ID ile)
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
-    // 2. Ana Hash (8 Haneli ID ve Taksit="0" ile)
+    // 2. Ana Hash (8 Haneli ID ve Taksit ile)
+    // Not: Taksit peşinse Hash içine hiç karakter girmez (Boş string birleşir)
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
@@ -109,7 +116,6 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    // DÜZELTME: Adres 'garantibbva.com.tr' olarak güncellendi (Fallback)
     const cleanBase = String(gatewayUrl || 'https://sanalposprovtest.garantibbva.com.tr').replace(/\/+$/, '');
     const actionUrl = cleanBase.includes('gt3dengine') ? cleanBase : `${cleanBase}/servlet/gt3dengine`;
 
@@ -127,7 +133,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,
         txncurrencycode: currencyCode,
         txntype: typeStr,
-        txninstallmentcount: taksit, 
+        txninstallmentcount: taksit, // Form'a BOŞ ("") olarak basılacak
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
