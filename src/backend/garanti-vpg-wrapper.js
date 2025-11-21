@@ -7,13 +7,21 @@ function cleanStr(str) {
 
 // [ADIM 1] ŞİFRE HASHLEME (SHA1)
 function createHashedPassword(password, terminalId) {
+    // Terminal ID 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
-    return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
+    
+    // [DEBUG] Şifre kontrolü için log
+    console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
+
+    return crypto.createHash('sha1')
+        .update(plain, 'utf8')
+        .digest('hex')
+        .toUpperCase();
 }
 
-// [ADIM 2] ANA HASH OLUŞTURMA
-// PHP Dosyasındaki Mantık: Taksit=1, Tip=sales, Tutar=TamSayı
+// [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
+// threed-payment.php mantığı: Taksit=1, Tutar=Tam Sayı
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -61,14 +69,14 @@ export async function buildPayHostingForm({
     const storeKeyClean = cleanStr(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // --- PHP DOSYASINI TAKLİT EDEN AYARLAR ---
+    // --- THREED-PAYMENT.PHP DOSYASINI TAKLİT EDEN AYARLAR ---
 
-    // 1. TUTAR: PHP'de "100" (Tam Sayı)
-    // Bizde 4535000 (Kuruş) geliyor -> 100'e bölüp string yapıyoruz -> "45350"
+    // 1. TUTAR: PHP dosyasında "100" (Tam Sayı)
+    // Bizde 4535000 (Kuruş) geliyor -> 45350 (Tam Sayı) yapıyoruz.
     const amountNum = Math.floor(Number(amountMinor) / 100);
     const amountClean = String(amountNum); 
 
-    // 2. TAKSİT: PHP'de "1" (Sabit)
+    // 2. TAKSİT: PHP dosyasında "1" (Sabit)
     // Peşin işlem için "1" gönderiyoruz.
     let finalInstallment = '1';
     // Eğer sistemden 3, 6 gibi taksit gelirse onu kullan, yoksa 1.
@@ -76,7 +84,7 @@ export async function buildPayHostingForm({
         finalInstallment = String(installments);
     }
 
-    // 3. TİP: PHP'de "sales"
+    // 3. TİP: PHP dosyasında 'sales'
     const finalType = txnType || 'sales';
 
     const now = new Date();
@@ -101,7 +109,6 @@ export async function buildPayHostingForm({
     // URL: PHP dosyasındaki gt3dengine
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
     
-    // Secret override
     if (gatewayUrl) {
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
@@ -119,7 +126,8 @@ export async function buildPayHostingForm({
         terminalmerchantid: cleanStr(merchantId),
         terminalid: terminalIdRaw,
         orderid: orderId,
-        customeripaddress: customerIp || '127.0.0.1', // [DÜZELTME YAPILDI]
+        // DÜZELTME BURADA: 'customeripaddress' hatası giderildi
+        customeripaddress: customerIp || '127.0.0.1', 
         customeremailaddress: email,
         txnamount: amountClean,         // "45350"
         txncurrencycode: currencyCode,
