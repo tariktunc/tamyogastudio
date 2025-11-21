@@ -1,18 +1,18 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- YARDIMCI: String Temizleme ---
+// --- YARDIMCI FONKSİYONLAR ---
+
 function cleanStr(str) {
     return String(str || '').trim();
 }
 
-// [1. ADIM] ŞİFRE HASHLEME
+// [1. ADIM] ŞİFRE HASHLEME (SHA1)
 function createHashedPassword(password, terminalId) {
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
     
-    // Loglarda şifre uzunluğunu kontrol edelim (Sondaki / karakteri var mı?)
-    console.warn(`[ADIM 5] Şifre Uzunluğu: ${password.length} (Beklenen: 10)`);
+    console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
 
     return crypto.createHash('sha1')
         .update(plain, 'utf8')
@@ -20,10 +20,9 @@ function createHashedPassword(password, terminalId) {
         .toUpperCase();
 }
 
-// [2. ADIM] ANA HASH OLUŞTURMA
-function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
-    
-    // DÜZELTME: Taksit artık zorunlu "0" geliyor.
+// [2. ADIM] ANA HASH OLUŞTURMA (SHA512)
+// typeForHash ve installForHash parametreleri eklendi
+function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
         orderId +
@@ -31,13 +30,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        txnType +
-        installments +
+        typeForHash +    // BURASI ARTIK BOŞ GELECEK (sales yazmayacak)
+        installForHash + // BURASI SENİN DEDİĞİN GİBİ BOŞ GELECEK
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[ADIM 7-KRİTİK] HASH STRING (Installment 0 Kontrolü):');
+    console.warn('[DEBUG] HASH STRING (SHA512 - Temizlenmiş):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -63,11 +62,11 @@ export async function buildPayHostingForm({
   email = 'musteri@example.com'
 }) {
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),
-        getSecret('GARANTI_STORE_NO'),
-        getSecret('GARANTI_TERMINAL_PASSWORD'),
-        getSecret('GARANTI_ENC_KEY'),
-        getSecret('GARANTI_CALLBACK_PATH')
+        getSecret('GARANTI_TERMINAL_ID'),       // 30691297
+        getSecret('GARANTI_STORE_NO'),          // 7000679
+        getSecret('GARANTI_TERMINAL_PASSWORD'), // 123qweASD/
+        getSecret('GARANTI_ENC_KEY'),           // 12345678
+        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garantibbva.com.tr
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
@@ -80,12 +79,23 @@ export async function buildPayHostingForm({
     const amountClean = amountNum.toFixed(2); 
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // --- DÜZELTME (GERİ ALINDI): TAKSİT ZORUNLU "0" ---
-    // HTML'de "" yazsa bile Banka algoritması "0" istiyor.
-    // Peşin (veya boş) ise "0", Taksitli ise "3" vb.
-    const finalInstallment = (installments && installments !== '0' && installments !== '1') ? String(installments) : '0';
+    // --- HİBRİT AYARLAR ---
 
-    const finalType = txnType || 'sales';
+    // 1. TAKSİT: Senin belirttiğin mantık.
+    // Form'a -> Boş "" (Peşin demek)
+    // Hash'e -> Boş "" (Peşin demek)
+    let installVal = '';
+    if (installments && installments !== '0' && installments !== '1') {
+        installVal = String(installments);
+    }
+
+    // 2. İŞLEM TİPİ: Burası kritik!
+    // Form'a -> "sales" gitmek ZORUNDA (Banka sales işlemi yapacağını bilsin)
+    // Hash'e -> "" (BOŞ) gitmeli (Çünkü PHP örneğinde $type="" idi)
+    const typeForForm = txnType || 'sales';
+    const typeForHash = ''; // Hash hesaplanırken araya "sales" yazılmayacak!
+
+    // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
@@ -99,8 +109,8 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        txnType: finalType,
-        installments: finalInstallment, // Burası artık "0"
+        typeForHash: typeForHash,       // BOŞ
+        installForHash: installVal,     // BOŞ (Peşin ise)
         storeKey: storeKeyClean,
         hashedPassword
     });
@@ -121,8 +131,8 @@ export async function buildPayHostingForm({
         customeremailaddress: email,
         txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: finalType,
-        txninstallmentcount: finalInstallment, // Form'a da "0" basılacak
+        txntype: typeForForm,           // Formda "sales" yazıyor
+        txninstallmentcount: installVal,// Formda "" yazıyor
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -133,7 +143,10 @@ export async function buildPayHostingForm({
     return { actionUrl, formFields };
 }
 
-// ... (Callback ve Onay fonksiyonları aynı kalacak)
+// =========================================================
+// DÖNÜŞ KONTROLÜ
+// =========================================================
+
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
@@ -141,7 +154,10 @@ export async function verifyCallbackHash(postBody) {
         const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
         const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
 
-        if (!responseHash || !hashParams) return false;
+        if (!responseHash || !hashParams) {
+            console.warn('[DEBUG] Callback: HashParams eksik.');
+            return false;
+        }
 
         const paramList = String(hashParams).split(':');
         let digestData = '';
