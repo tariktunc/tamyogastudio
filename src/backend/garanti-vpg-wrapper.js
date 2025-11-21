@@ -1,16 +1,15 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
+// --- HELPER: Store Key Normalization (NO HEX DECODE) ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
     console.log('[DEBUG] Store Key: Forced RAW mode (no hex decode).');
     return trimmedKey;
 }
 
-
 // --- HELPER: Password Hashing (SHA1) ---
 function createHashedPassword(password, terminalId) {
-    // FIX APPLIED: Terminal ID'nin 9 haneli (padded) versiyonu kullanılır
     const terminalIdEffective = String(terminalId).padStart(9, '0');
     const plain = password + terminalIdEffective;
     
@@ -18,16 +17,18 @@ function createHashedPassword(password, terminalId) {
     console.log('[DEBUG] HashedPassword Input (Plain):', plain);
     console.log('------------------------------------------------');
 
-    return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
+    return crypto.createHash('sha1')
+        .update(plain, 'utf8')
+        .digest('hex')
+        .toUpperCase();
 }
 
 // --- HELPER: Main 3D Hash Construction ---
 function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
-    // Sıralama: TerminalID + OrderID + Amount + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
     const plainText = 
         terminalId +
         orderId +
-        amount + // CRITICAL: Kurus/Minor unit olarak eklendi
+        amount +
         okUrl +
         failUrl +
         txnType +
@@ -40,27 +41,40 @@ function createSecure3DHash({ terminalId, orderId, amount, okUrl, failUrl, txnTy
     console.log(plainText);
     console.log('------------------------------------------------');
 
-    return crypto.createHash('sha1').update(plainText, 'utf8').digest('hex').toUpperCase();
+    return crypto.createHash('sha1')
+        .update(plainText, 'utf8')
+        .digest('hex')
+        .toUpperCase();
 }
 
-/**
- * Callback Hash Verification
- */
+// =========================================================
+// 3D CALLBACK VERIFICATION FIXED FOR OOS FULL MODE
+// =========================================================
+
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
-        const receivedHash = postBody.HASH || postBody.hash;
+        const receivedHash = postBody.HASH || postBody.hash; 
         const hashParams = postBody.hashparams || postBody.hashParams;
 
-        if (!receivedHash || !hashParams || !rawStoreKey) {
-            console.warn('[DEBUG] Callback Verify: Missing params.');
+        if (!receivedHash || !rawStoreKey) {
+            console.warn('[DEBUG] Callback Verify: Missing params (secure3dhash only mode).');
             return false;
         }
 
         const storeKey = normalizeStoreKey(rawStoreKey);
-        const paramsList = String(hashParams).split(':').filter(Boolean);
-        let plainText = '';
 
+        let paramsList = [];
+        if (hashParams) {
+            paramsList = String(hashParams).split(':').filter(Boolean);
+        } else {
+            paramsList = [
+                'clientid', 'oid', 'authcode', 'procreturncode', 'mdstatus',
+                'txnamount', 'txncurrencycode', 'txntimestamp'
+            ];
+        }
+
+        let plainText = '';
         for (const param of paramsList) {
             const keyLower = param.toLowerCase();
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
@@ -69,14 +83,17 @@ export async function verifyCallbackHash(postBody) {
         }
 
         plainText += storeKey;
-        
+
         console.log('[DEBUG] Callback Verify String:', plainText);
 
-        const calculatedHash = crypto.createHash('sha1').update(plainText, 'utf8').digest('base64');
-        
+        const calculatedHash = crypto.createHash('sha1')
+            .update(plainText, 'utf8')
+            .digest('base64');
+
         const isValid = (receivedHash === calculatedHash);
+
         console.log(`[DEBUG] Hash Match Result: ${isValid}`);
-        
+
         return isValid;
     } catch (e) {
         console.error('[DEBUG] Verify Error:', e);
@@ -84,11 +101,13 @@ export async function verifyCallbackHash(postBody) {
     }
 }
 
-// --- MAIN FUNCTION ---
+// =========================================================
+// BUILD PAY FORM
+// =========================================================
 
 export async function buildPayHostingForm({
   orderId,
-  amountMinor, // Kurus cinsinden geliyor (Örn: 290000)
+  amountMinor,
   currency = '949',
   okUrl,
   failUrl,
@@ -97,7 +116,6 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
-    // 1. Secret'ları Çek
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
@@ -106,39 +124,28 @@ export async function buildPayHostingForm({
         getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
-    // 2. Provision User ID'yi Hardcode et (Önceki karara göre)
     const provUserId = "PROVOOS";
-    
+
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    // 3. Terminal ID Logic (9-Hane Düzeltmesi)
     const terminalIdRaw = String(rawTerminalId).trim();
-    const terminalIdToSend = terminalIdRaw.padStart(9, '0'); // 010380183
-    
+    const terminalIdToSend = terminalIdRaw.padStart(9, '0');
+
     console.log('[DEBUG] Terminal IDs -> Raw:', terminalIdRaw, 'Padded:', terminalIdToSend);
 
-    // 4. Data Formatting
-    // KRİTİK FIX: amountMinor (kuruş) doğrudan tamsayı stringi olarak kullanılır.
-    const amountClean = String(amountMinor); 
-
-    // Taksit boşsa, '1' ise veya '0' ise hash hesaplamasına boş string olarak girer
+    const amountClean = String(amountMinor);
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
-    
+
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 5. Hash Generation
-    // Password Hash (9 digits used)
     const hashedPassword = createHashedPassword(password, terminalIdToSend);
-    
-    // Store Key Decode
     const storeKey = normalizeStoreKey(rawStoreKey);
-
     const hash = createSecure3DHash({
-        terminalId: terminalIdToSend, // 9 digits used
+        terminalId: terminalIdToSend,
         orderId,
-        amount: amountClean, // Tutar kuruş cinsinden (Örn: "290000")
+        amount: amountClean,
         okUrl,
         failUrl,
         txnType,
@@ -147,22 +154,20 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    // 6. Endpoint
     const cleanBase = String(gatewayUrl || 'https://sanalposprov.garanti.com.tr').replace(/\/+$/, '');
     const actionUrl = `${cleanBase}/servlet/gt3dengine`;
 
-    // 7. Form Fields
     const formFields = {
         mode: 'PROD',
         apiversion: 'v0.01',
-        terminalprovuserid: provUserId, // Hardcoded PROVOOS
-        terminaluserid: provUserId,     // Hardcoded PROVOOS
+        terminalprovuserid: provUserId,
+        terminaluserid: provUserId,
         terminalmerchantid: merchantId,
-        terminalid: terminalIdToSend, 
+        terminalid: terminalIdToSend,
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        txnamount: amountClean, // CRITICAL FIX: Form alanına tamsayı kuruş (minor unit) gönderilir
+        txnamount: amountClean,
         txncurrencycode: currency,
         txntype: txnType,
         txninstallmentcount: taksit,
@@ -181,7 +186,7 @@ export function isApproved(postBody) {
     const mdStatus = String(postBody.mdstatus || postBody.MDStatus || '');
     const procReturnCode = String(postBody.procreturncode || postBody.ProcReturnCode || '');
     const response = String(postBody.response || postBody.Response || '');
-    
+
     const mdOk = ['1', '2', '3', '4'].includes(mdStatus);
     const prcOk = procReturnCode === '00' || response.toLowerCase() === 'approved';
 
