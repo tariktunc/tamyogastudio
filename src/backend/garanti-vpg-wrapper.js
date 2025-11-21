@@ -7,12 +7,13 @@ function cleanStr(str) {
 }
 
 // --- YARDIMCI: Password Hashing (SHA1) ---
-// Doküman: SHA1(Password + TerminalID_Padded) -> UpperCase
+// PHP: sha1($password . str_pad($terminalId, 9, 0, STR_PAD_LEFT)) -> Upper
 function createHashedPassword(password, terminalId) {
     const terminalIdEffective = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdEffective;
     
-    console.log('[DEBUG] HashedPassword Input:', plain);
+    // Gizlilik için şifrenin tamamını loglamıyoruz, sadece formatı kontrol ediyoruz
+    console.log('[DEBUG] HashedPassword Generated for Terminal:', terminalIdEffective);
 
     return crypto.createHash('sha1')
         .update(plain, 'utf8')
@@ -21,8 +22,7 @@ function createHashedPassword(password, terminalId) {
 }
 
 // --- YARDIMCI: GÖNDERİM İÇİN HASH (SHA512) ---
-// Bu fonksiyon SADECE bankaya formu gönderirken kullanılır.
-// Sıralama sabittir: TerminalID + OrderID + Amount + ...
+// PHP Sırası: TerminalID + OrderID + Amount + CurrencyCode + SuccessUrl + ErrorUrl + Type + Installment + StoreKey + HashedPassword
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -36,7 +36,10 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         storeKey +
         hashedPassword;
 
-    console.log('[DEBUG] OUTGOING HASH STRING:', plainText);
+    console.log('------------------------------------------------');
+    console.log('[DEBUG] OUTGOING HASH STRING TO SIGN:');
+    console.log(plainText);
+    console.log('------------------------------------------------');
 
     return crypto.createHash('sha512')
         .update(plainText, 'utf8')
@@ -45,7 +48,7 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
 }
 
 // =========================================================
-// 1. BUILD PAY FORM (3D_OOS_FULL MODU)
+// 1. BUILD PAY FORM (3D_OOS_FULL / PHP MANTIĞI)
 // =========================================================
 
 export async function buildPayHostingForm({
@@ -72,24 +75,36 @@ export async function buildPayHostingForm({
     const terminalIdClean = cleanStr(rawTerminalId);
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
+    
+    // 1. Terminal ID: 9 haneye tamamla (Başına 0 koy)
     const terminalIdToSend = terminalIdClean.padStart(9, '0');
 
-    // Amount: "100.00" formatı
+    // 2. Amount: PHP örneğinde "100" string kullanılmıştı. Ancak VPG genelde "100.00" ister.
+    // Güvenli yöntem: Wix'ten gelen kuruşlu tutarı (10000) -> "100.00" formatına çeviriyoruz.
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
 
-    // Currency: TRY -> 949
+    // 3. Currency: TRY gelirse "949" yap.
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
-    const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '';
+
+    // 4. Taksit (KRİTİK DÜZELTME):
+    // PHP örneğinde taksit "0" idi. HTML formunda "" idi.
+    // Hash hatasını çözmek için Peşin işlemde taksit sayısını "0" string olarak sabitliyoruz.
+    // Eğer installments değeri yoksa veya 1 ise "0" gönderiyoruz.
+    let taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '0';
+
+    // 5. İşlem Tipi
     const typeStr = txnType || 'sales';
 
-    // Zaman Damgası (Compact: YYYYMMDDHHmmss)
+    // 6. Zaman Damgası (Format: YYYYMMDDHHmmss)
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // Hash Hesaplama (Gönderim)
+    // 7. Hashed Password (SHA1)
     const hashedPassword = createHashedPassword(passwordClean, terminalIdToSend);
+
+    // 8. Main Hash (SHA512)
     const hash = createSecure3DHash({
         terminalId: terminalIdToSend,
         orderId,
@@ -98,7 +113,7 @@ export async function buildPayHostingForm({
         okUrl,
         failUrl,
         txnType: typeStr,
-        installments: taksit,
+        installments: taksit, // Burası artık "0" gidiyor
         storeKey: storeKeyClean,
         hashedPassword
     });
@@ -120,7 +135,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,
         txncurrencycode: currencyCode,
         txntype: typeStr,
-        txninstallmentcount: taksit,
+        txninstallmentcount: taksit, // Form'da da "0" yazacak
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -132,7 +147,7 @@ export async function buildPayHostingForm({
 }
 
 // =========================================================
-// 2. CALLBACK VERIFICATION (DÖNÜŞ KONTROLÜ - C# ÇEVİRİSİ)
+// 2. CALLBACK VERIFICATION (DÖNÜŞ KONTROLÜ - DİNAMİK)
 // =========================================================
 
 export async function verifyCallbackHash(postBody) {
@@ -140,62 +155,45 @@ export async function verifyCallbackHash(postBody) {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const storeKey = cleanStr(rawStoreKey);
 
-        // 1. Bankadan gelen Hash ve HashParams'ı al
+        // Gelen veriler
         const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
         const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
 
-        // 2. Doküman Kuralı: "hashparams null veya boş olmamalı"
+        // Eğer banka hata dönerse (MD:7 gibi) hashparams gelmez. Bu yüzden önce bunu kontrol ediyoruz.
         if (!responseHash || !hashParams) {
-            console.warn('[DEBUG] Callback Verify: Hash or HashParams is missing!');
+            // Bu bir hata değil, bankanın reddetme durumudur.
+            console.warn('[DEBUG] Callback: Hash or HashParams missing. Transaction likely rejected by bank.');
             return false;
         }
 
-        // 3. C# Mantığı: Parametreleri ':' ile ayır ve döngüye sok
-        // char[] separator = new char[] { ':' };
+        // Parametreleri ayır: clientid:oid:authcode...
         const paramList = String(hashParams).split(':');
         
         let digestData = '';
 
-        // 4. Döngü ile değerleri topla
         for (const param of paramList) {
-            // Boş parametre gelirse atla (split bazen boş string üretebilir)
             if(!param) continue;
-
-            // Parametre adını küçük harfe çevirerek postBody içinde ara (Case-Insensitive bulmak için)
-            // Çünkü hashParams 'ClientId' diyebilir ama postBody 'clientid' olabilir.
             const keyLower = param.toLowerCase();
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
-            
-            // C#: Request.Form.Get(param) == null ? "" : ...
             const value = foundKey ? postBody[foundKey] : '';
-            
             digestData += value;
         }
 
-        // 5. Sonuna Store Key ekle
-        // C#: digestData += strStoreKey;
+        // Store Key ekle
         digestData += storeKey;
 
-        // 6. SHA512 Şifreleme
-        // C#: sha.ComputeHash...
+        // SHA512 Hesapla
         const calculatedHash = crypto.createHash('sha512')
-            .update(digestData, 'utf8') // Node.js genelde UTF8 çalışır
+            .update(digestData, 'utf8')
             .digest('hex')
             .toUpperCase();
 
-        // 7. Karşılaştırma
         const isValid = (responseHash === calculatedHash);
 
-        if (!isValid) {
-            console.log('------------------------------------------------');
-            console.log('[DEBUG] HASH MISMATCH!');
-            console.log('Incoming HashParams:', hashParams);
-            console.log('My Digest String:', digestData);
-            console.log('My Calculated Hash:', calculatedHash);
-            console.log('Bank Received Hash:', responseHash);
-            console.log('------------------------------------------------');
+        if (isValid) {
+            console.log('[DEBUG] HASH SUCCESS: Verified with Bank params.');
         } else {
-            console.log('[DEBUG] HASH VALIDATED SUCCESSFULY (Bankadan Geliyor)');
+            console.log(`[DEBUG] HASH FAIL: Calc: ${calculatedHash} vs Recv: ${responseHash}`);
         }
 
         return isValid;
@@ -207,21 +205,11 @@ export async function verifyCallbackHash(postBody) {
 }
 
 // =========================================================
-// 3. ONAY KONTROLÜ (Doküman Kuralı: Sadece 00)
+// 3. ONAY KONTROLÜ
 // =========================================================
 
 export function isApproved(postBody) {
-    // Doküman: "Dönüş sadece 00 için kontrol yapılmalıdır."
     const procReturnCode = String(postBody.procreturncode || postBody.ProcReturnCode || '');
-    const response = String(postBody.response || postBody.Response || '');
-
-    // Kesin kural: procReturnCode "00" olmalı.
-    // Ekstra güvenlik olarak Response "Approved" mu diye de bakabiliriz ama "00" esastır.
-    const isSuccess = (procReturnCode === '00');
-
-    if(!isSuccess) {
-        console.log(`[DEBUG] Transaction Declined. Code: ${procReturnCode}, Msg: ${postBody.mderrormessage || postBody.errmsg}`);
-    }
-
-    return isSuccess;
+    // Dokümana göre sadece "00" başarılıdır.
+    return procReturnCode === '00';
 }
