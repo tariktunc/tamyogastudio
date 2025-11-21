@@ -8,6 +8,7 @@ function cleanStr(str) {
 }
 
 // [1. ADIM] ŞİFRE HASHLEME (SHA1)
+// Kural: Şifre + 9 Haneli Terminal ID (Başına 0 eklenmiş)
 function createHashedPassword(password, terminalId) {
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
@@ -21,7 +22,7 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [2. ADIM] ANA HASH OLUŞTURMA (SHA512)
-// typeForHash ve installForHash parametreleri eklendi
+// DİKKAT: Buraya formdan farklı olarak PHP mantığındaki değerler gelecek.
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -30,13 +31,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        typeForHash +    // BURASI ARTIK BOŞ GELECEK (sales yazmayacak)
-        installForHash + // BURASI SENİN DEDİĞİN GİBİ BOŞ GELECEK
+        typeForHash +    // PHP Kuralı: Boş
+        installForHash + // PHP Kuralı: "0" (Peşin ise)
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (SHA512 - Temizlenmiş):');
+    console.warn('[DEBUG] HASH STRING (3D_OOS_PAY / API 512 Mantığı):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -47,7 +48,7 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
 }
 
 // =========================================================
-// FORM OLUŞTURMA
+// FORM OLUŞTURMA (3D_OOS_PAY / API 512)
 // =========================================================
 
 export async function buildPayHostingForm({
@@ -79,27 +80,31 @@ export async function buildPayHostingForm({
     const amountClean = amountNum.toFixed(2); 
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // --- HİBRİT AYARLAR ---
+    // --- HİBRİT MANTIK (OOS_PAY İÇİN) ---
 
-    // 1. TAKSİT: Senin belirttiğin mantık.
-    // Form'a -> Boş "" (Peşin demek)
-    // Hash'e -> Boş "" (Peşin demek)
-    let installVal = '';
+    // 1. TAKSİT AYARI
+    // Form (HTML): Peşin ise boş string "".
+    // Hash (PHP): Peşin ise "0".
+    let installForForm = '';
+    let installForHash = '0';
+    
     if (installments && installments !== '0' && installments !== '1') {
-        installVal = String(installments);
+        installForForm = String(installments);
+        installForHash = String(installments);
     }
 
-    // 2. İŞLEM TİPİ: Burası kritik!
-    // Form'a -> "sales" gitmek ZORUNDA (Banka sales işlemi yapacağını bilsin)
-    // Hash'e -> "" (BOŞ) gitmeli (Çünkü PHP örneğinde $type="" idi)
+    // 2. İŞLEM TİPİ AYARI
+    // Form (HTML): "sales"
+    // Hash (PHP): "" (Boş)
     const typeForForm = txnType || 'sales';
-    const typeForHash = ''; // Hash hesaplanırken araya "sales" yazılmayacak!
+    const typeForHash = ''; 
 
     // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
+    // Hash İşlemleri
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
     const hash = createSecure3DHash({
@@ -109,8 +114,8 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        typeForHash: typeForHash,       // BOŞ
-        installForHash: installVal,     // BOŞ (Peşin ise)
+        typeForHash: typeForHash,       // Hash'e BOŞ giriyor
+        installForHash: installForHash, // Hash'e "0" giriyor
         storeKey: storeKeyClean,
         hashedPassword
     });
@@ -120,8 +125,8 @@ export async function buildPayHostingForm({
 
     const formFields = {
         mode: 'TEST',
-        apiversion: 'v0.01',
-        secure3dsecuritylevel: '3D_OOS_PAY',
+        apiversion: '512',                 // [DEĞİŞİKLİK 1] v0.01 yerine 512
+        secure3dsecuritylevel: '3D_OOS_PAY', // [DEĞİŞİKLİK 2] FULL yerine PAY
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
@@ -131,8 +136,8 @@ export async function buildPayHostingForm({
         customeremailaddress: email,
         txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: typeForForm,           // Formda "sales" yazıyor
-        txninstallmentcount: installVal,// Formda "" yazıyor
+        txntype: typeForForm,            // Form'a "sales"
+        txninstallmentcount: installForForm, // Form'a "" (boş)
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
