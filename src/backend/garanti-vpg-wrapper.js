@@ -7,7 +7,9 @@ function cleanStr(str) {
     return String(str || '').trim();
 }
 
-// [1. ADIM] ŞİFRE HASHLEME (SHA1)
+// [ADIM 1] ŞİFRE HASHLEME (SHA1)
+// Kural: Şifre + 9 Haneli Terminal ID (Başına 0 eklenmiş)
+// Kaynak: PHP Örneği (GenerateSecurityData fonksiyonu)
 function createHashedPassword(password, terminalId) {
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
@@ -20,9 +22,9 @@ function createHashedPassword(password, terminalId) {
         .toUpperCase();
 }
 
-// [2. ADIM] ANA HASH OLUŞTURMA (SHA512)
-// KURAL: Form'a giden değerlerle BİREBİR AYNI olmalı.
-function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
+// [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
+// Kaynak: PHP Örneği (GenerateHashData fonksiyonu)
+function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
         orderId +
@@ -30,13 +32,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        txnType +      // Form'da "sales" ise burada da "sales"
-        installments + // Form'da boş ise burada da boş
+        typeForHash +    // PHP Örneğine göre: "" (Boş)
+        installForHash + // PHP Örneğine göre: "0"
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (Tam Eşleşme Mantığı):');
+    console.warn('[DEBUG] HASH STRING (Doküman Bazlı Tam Uyum):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -74,42 +76,50 @@ export async function buildPayHostingForm({
     const terminalIdRaw = cleanStr(rawTerminalId);
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
-    
-    const amountNum = Number(amountMinor) / 100;
-    const amountClean = amountNum.toFixed(2); 
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
+    
+    // --- DEĞİŞİKLİK 1: TUTAR FORMATI ---
+    // Kaynak: HTML ve PHP örneklerinde değer "100" (Noktasız Tam Sayı)
+    // Wix'ten gelen amountMinor zaten kuruş cinsinden tam sayıdır (Örn: "4535000").
+    // toFixed(2) KULLANMIYORUZ. Doğrudan string olarak alıyoruz.
+    const amountClean = String(amountMinor); 
 
-    // --- DÜZELTME: TAM EŞLEŞME ---
-
-    // 1. TAKSİT:
-    // Peşin (veya 1) ise -> "" (BOŞ)
-    // Taksitli (3,6 vb) ise -> "3"
-    let finalInstallment = '';
+    // --- DEĞİŞİKLİK 2: TAKSİT VE TİP (HİBRİT YAPI) ---
+    
+    // TAKSİT
+    // Form (HTML): "Taksit gerekmeyen işlemlerde: '' girilmelidir" -> BOŞ
+    // Hash (PHP): "$installmentCount = 0;" -> "0"
+    let installForForm = '';
+    let installForHash = '0';
+    
     if (installments && installments !== '0' && installments !== '1') {
-        finalInstallment = String(installments);
+        installForForm = String(installments);
+        installForHash = String(installments);
     }
 
-    // 2. İŞLEM TİPİ:
-    // Her zaman "sales"
-    const finalType = txnType || 'sales';
+    // İŞLEM TİPİ
+    // Form (HTML): value="sales" -> "sales"
+    // Hash (PHP): $type = ""; -> "" (BOŞ)
+    const typeForForm = txnType || 'sales';
+    const typeForHash = ''; 
 
     // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // Hash Hesaplama
+    // Hash İşlemleri
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
-        amount: amountClean,
+        amount: amountClean,     // Noktasız (4535000)
         currency: currencyCode,
         okUrl,
         failUrl,
-        txnType: finalType,            // "sales" (Hash'e giriyor)
-        installments: finalInstallment,// "" (Hash'e giriyor)
+        typeForHash: typeForHash,       // "" (Boş)
+        installForHash: installForHash, // "0" (Peşin ise)
         storeKey: storeKeyClean,
         hashedPassword
     });
@@ -128,10 +138,10 @@ export async function buildPayHostingForm({
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        txnamount: amountClean,
+        txnamount: amountClean,         // Noktasız (4535000)
         txncurrencycode: currencyCode,
-        txntype: finalType,             // "sales" (Forma giriyor)
-        txninstallmentcount: finalInstallment, // "" (Forma giriyor)
+        txntype: typeForForm,           // "sales"
+        txninstallmentcount: installForForm, // ""
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
