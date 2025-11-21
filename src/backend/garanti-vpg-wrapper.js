@@ -22,7 +22,7 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-// KURAL: HTML Formundaki değerlerle BİREBİR AYNI olmalı.
+// PHP Dosyası Mantığı: Taksit "1" olarak gidiyor.
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -31,13 +31,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        txnType +      // Formda "sales" -> Hash'te "sales"
-        installments + // Formda "" -> Hash'te ""
+        txnType +      // "sales"
+        installments + // "1" (Peşin için)
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (HTML Form Tam Eşleşme):');
+    console.warn('[DEBUG] HASH STRING (PHP Dosyası: Taksit=1):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -76,20 +76,22 @@ export async function buildPayHostingForm({
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
     
-    // Tutar: 45350.00 (Noktalı format)
+    // Tutar: 45350.00
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // --- TAM EŞLEŞME AYARLARI ---
+    // --- PHP DOSYASINA GÖRE AYARLAR ---
 
-    // 1. TAKSİT: HTML Formunda value="" (Boş)
-    let finalInstallment = '';
-    if (installments && installments !== '0' && installments !== '1') {
+    // 1. TAKSİT: PHP dosyasında value="1" görünüyor.
+    // Peşin (boş, 0 veya 1) ise -> "1"
+    // Taksitli ise -> Taksit Sayısı
+    let finalInstallment = '1';
+    if (installments && installments !== '0' && installments !== '1' && installments !== '') {
         finalInstallment = String(installments);
     }
 
-    // 2. İŞLEM TİPİ: HTML Formunda value="sales"
+    // 2. İŞLEM TİPİ: "sales"
     const finalType = txnType || 'sales';
 
     // Zaman Damgası
@@ -108,18 +110,16 @@ export async function buildPayHostingForm({
         okUrl,
         failUrl,
         txnType: finalType,            // "sales"
-        installments: finalInstallment,// ""
+        installments: finalInstallment,// "1"
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // [DÜZELTME] URL: gt3dengine (HTML Formundaki Doğru Adres)
+    // URL: gt3dengine (PHP dosyasındaki action adresi)
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
     
-    // Eğer secret içinde base url varsa onu kullan
     if (gatewayUrl) {
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
-        // Eski domain varsa yenisiyle değiştir
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
             base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
         }
@@ -129,7 +129,7 @@ export async function buildPayHostingForm({
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY', // [DÜZELTME] HTML'de OOS_PAY yazıyor
+        secure3dsecuritylevel: '3D_OOS_PAY',
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
@@ -140,7 +140,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,
         txncurrencycode: currencyCode,
         txntype: finalType,             // "sales"
-        txninstallmentcount: finalInstallment, // ""
+        txninstallmentcount: finalInstallment, // "1"
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -151,7 +151,6 @@ export async function buildPayHostingForm({
     return { actionUrl, formFields };
 }
 
-// ... (Verify Callback ve IsApproved fonksiyonları aynı kalacak)
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
@@ -159,10 +158,7 @@ export async function verifyCallbackHash(postBody) {
         const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
         const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
 
-        if (!responseHash || !hashParams) {
-            console.warn('[DEBUG] Callback: HashParams eksik.');
-            return false;
-        }
+        if (!responseHash || !hashParams) return false;
 
         const paramList = String(hashParams).split(':');
         let digestData = '';
