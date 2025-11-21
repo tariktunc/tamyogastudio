@@ -31,7 +31,7 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         okUrl +
         failUrl +
         txnType +
-        installments + // Burası artık varsayılan olarak "0" gelecek
+        installments + 
         storeKey +
         hashedPassword;
 
@@ -66,7 +66,7 @@ export async function buildPayHostingForm({
         getSecret('GARANTI_STORE_NO'),          // 7000679
         getSecret('GARANTI_TERMINAL_PASSWORD'), // 123qweASD/
         getSecret('GARANTI_ENC_KEY'),           // 12345678
-        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garanti.com.tr
+        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garantibbva.com.tr
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
@@ -82,8 +82,7 @@ export async function buildPayHostingForm({
     // Para Birimi: 949
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // TAKSİT AYARI (TALİMATINIZA GÖRE): 
-    // Eğer installments boş, null veya 1 ise "0" gönderiyoruz.
+    // TAKSİT AYARI: Boş, null veya 1 ise "0" gönder.
     const taksit = (installments && installments !== '1' && installments !== '0') ? String(installments) : '0';
 
     const typeStr = txnType || 'sales';
@@ -110,7 +109,8 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    const cleanBase = String(gatewayUrl || 'https://sanalposprovtest.garanti.com.tr').replace(/\/+$/, '');
+    // DÜZELTME: Adres 'garantibbva.com.tr' olarak güncellendi (Fallback)
+    const cleanBase = String(gatewayUrl || 'https://sanalposprovtest.garantibbva.com.tr').replace(/\/+$/, '');
     const actionUrl = cleanBase.includes('gt3dengine') ? cleanBase : `${cleanBase}/servlet/gt3dengine`;
 
     const formFields = {
@@ -127,7 +127,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,
         txncurrencycode: currencyCode,
         txntype: typeStr,
-        txninstallmentcount: taksit, // Form'a "0" olarak basılacak
+        txninstallmentcount: taksit, 
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
