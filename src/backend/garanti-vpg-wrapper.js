@@ -9,6 +9,7 @@ function cleanStr(str) {
 
 // [ADIM 1] ŞİFRE HASHLEME (SHA1)
 function createHashedPassword(password, terminalId) {
+    // Terminal ID 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
     
@@ -21,7 +22,8 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
+// KURAL: HTML Formundaki değerlerle BİREBİR AYNI olmalı.
+function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
         orderId +
@@ -29,13 +31,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        typeForHash +    // "sales"
-        installForHash + // "0"
+        txnType +      // Formda "sales" -> Hash'te "sales"
+        installments + // Formda "" -> Hash'te ""
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (Sales + 0 Mantığı):');
+    console.warn('[DEBUG] HASH STRING (HTML Form Tam Eşleşme):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -61,11 +63,11 @@ export async function buildPayHostingForm({
   email = 'musteri@example.com'
 }) {
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),
-        getSecret('GARANTI_STORE_NO'),
-        getSecret('GARANTI_TERMINAL_PASSWORD'),
-        getSecret('GARANTI_ENC_KEY'),
-        getSecret('GARANTI_CALLBACK_PATH')
+        getSecret('GARANTI_TERMINAL_ID'),       // 30691297
+        getSecret('GARANTI_STORE_NO'),          // 7000679
+        getSecret('GARANTI_TERMINAL_PASSWORD'), // 123qweASD/
+        getSecret('GARANTI_ENC_KEY'),           // 12345678
+        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garantibbva.com.tr
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
@@ -74,33 +76,28 @@ export async function buildPayHostingForm({
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
     
+    // Tutar: 45350.00 (Noktalı format)
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // --- YENİ KOMBİNASYON: SALES + 0 ---
+    // --- TAM EŞLEŞME AYARLARI ---
 
-    // 1. TAKSİT
-    // Form: Peşin ise boş ""
-    // Hash: Peşin ise "0" (KESİN)
-    let installForForm = '';
-    let installForHash = '0';
-    
+    // 1. TAKSİT: HTML Formunda value="" (Boş)
+    let finalInstallment = '';
     if (installments && installments !== '0' && installments !== '1') {
-        installForForm = String(installments);
-        installForHash = String(installments);
+        finalInstallment = String(installments);
     }
 
-    // 2. İŞLEM TİPİ
-    // Form: "sales"
-    // Hash: "sales" (KESİN)
-    const typeForForm = txnType || 'sales';
-    const typeForHash = txnType || 'sales';
+    // 2. İŞLEM TİPİ: HTML Formunda value="sales"
+    const finalType = txnType || 'sales';
 
+    // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
+    // Hash Hesaplama
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
     const hash = createSecure3DHash({
@@ -110,16 +107,19 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        typeForHash: typeForHash,       // "sales"
-        installForHash: installForHash, // "0"
+        txnType: finalType,            // "sales"
+        installments: finalInstallment,// ""
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // URL Ayarı: gt3dengine
+    // [DÜZELTME] URL: gt3dengine (HTML Formundaki Doğru Adres)
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
+    
+    // Eğer secret içinde base url varsa onu kullan
     if (gatewayUrl) {
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
+        // Eski domain varsa yenisiyle değiştir
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
             base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
         }
@@ -129,7 +129,7 @@ export async function buildPayHostingForm({
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: '3D_OOS_PAY',
+        secure3dsecuritylevel: 'OOS_PAY', // [DÜZELTME] HTML'de OOS_PAY yazıyor
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
@@ -139,8 +139,8 @@ export async function buildPayHostingForm({
         customeremailaddress: email,
         txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: typeForForm,           // "sales"
-        txninstallmentcount: installForForm, // "" (Boş)
+        txntype: finalType,             // "sales"
+        txninstallmentcount: finalInstallment, // ""
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -151,6 +151,7 @@ export async function buildPayHostingForm({
     return { actionUrl, formFields };
 }
 
+// ... (Verify Callback ve IsApproved fonksiyonları aynı kalacak)
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
@@ -158,7 +159,10 @@ export async function verifyCallbackHash(postBody) {
         const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
         const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
 
-        if (!responseHash || !hashParams) return false;
+        if (!responseHash || !hashParams) {
+            console.warn('[DEBUG] Callback: HashParams eksik.');
+            return false;
+        }
 
         const paramList = String(hashParams).split(':');
         let digestData = '';
