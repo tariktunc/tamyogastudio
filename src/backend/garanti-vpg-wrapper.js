@@ -121,7 +121,7 @@ export async function buildPayHostingForm({
     const formFields = {
         mode: 'TEST',
         apiversion: 'v0.01',
-        secure3dsecuritylevel: '3D_OOS_FULL',
+        secure3dsecuritylevel: '3D_OOS_PAY',
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
