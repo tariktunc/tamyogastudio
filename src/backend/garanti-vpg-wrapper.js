@@ -6,14 +6,13 @@ function cleanStr(str) {
 }
 
 // [ADIM 1] ŞİFRE HASHLEME (SHA1 - Latin1)
-// mewebstudio Kütüphanesi Mantığı: SHA1(Password + PadlenmişTerminalID)
+// Terminal ID burada zaten pad'lenmiş olarak gelecek
 function createHashedPassword(password, terminalId) {
-    const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
-    const plain = password + terminalIdPadded;
+    // Terminal ID dışarıda pad'lendiği için burada tekrar işlem yapmaya gerek yok ama güvenlik için logluyoruz
+    const plain = password + terminalId;
     
-    console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
+    console.log(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalId}`);
 
-    // Garanti için latin1 encoding en güvenli yoldur
     return crypto.createHash('sha1')
         .update(plain, 'latin1') 
         .digest('hex')
@@ -21,7 +20,6 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-// mewebstudio Kütüphanesi Mantığı: Tutar=Integer, Taksit=Boş (Peşin ise)
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -35,10 +33,9 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         storeKey +
         hashedPassword;
 
-    console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (mewebstudio Mantığı: Tutar=TamSayı, Taksit=Boş):');
-    console.warn(plainText);
-    console.warn('------------------------------------------------');
+    console.log('------------------------------------------------');
+    console.log('[DEBUG] HASH STRING:', plainText);
+    console.log('------------------------------------------------');
 
     return crypto.createHash('sha512')
         .update(plainText, 'latin1')
@@ -67,60 +64,55 @@ export async function buildPayHostingForm({
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    const terminalIdRaw = cleanStr(rawTerminalId);
+    // *** KRİTİK DÜZELTME ***
+    // Terminal ID her zaman 9 hane olmalı (Başına 0 eklenmeli)
+    // Örn: 30691297 -> 030691297
+    const terminalId = String(rawTerminalId || '').trim().padStart(9, '0');
+    
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // [DÜZELTME 1] TUTAR: Kuruş Cinsinden Tam Sayı (Integer)
-    // mewebstudio kütüphanesi: (int) round($amount * 100)
-    // Wix amountMinor zaten bu formattadır. Örn: "4535000"
-    // Nokta YOK.
-    const amountNum = Math.floor(Number(amountMinor) / 100); // Eğer Wix 4535000 gönderiyorsa bu 45350 olur.
-    // DİKKAT: Wix amountMinor zaten kuruş mu? Evet.
-    // Eğer Wix 45350.00 TL için 4535000 gönderiyorsa, Garanti 45350 (100'e bölünmüş halini) değil,
-    // direkt kuruş halini isteyebilir mi?
-    // Garanti VPG dökümanı "100" = 1.00 TL der. Yani son iki hane kuruştur.
-    // Wix 100 TL için 10000 gönderir.
-    // O zaman bizim "10000" göndermemiz lazım.
-    const amountClean = String(amountMinor); // Direkt Kuruş (Örn: 4535000)
+    // Tutar Wix'ten kuruş (minor unit) olarak gelir (Örn: 100.00 TL -> "10000")
+    // Garanti VPG direkt bu formatı kabul eder.
+    const amountClean = String(amountMinor);
 
-    // [DÜZELTME 2] TAKSİT: Boş String (Peşin ise)
-    // mewebstudio kütüphanesi: installment > 1 ? installment : ''
+    // Taksit kontrolü (Peşin ise boş string)
     let finalInstallment = '';
-    if (installments && installments !== '0' && installments !== '1' && installments !== '') {
+    if (installments && installments !== '0' && installments !== '1') {
         finalInstallment = String(installments);
     }
 
-    // 3. TİP: "sales"
     const finalType = txnType || 'sales';
 
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
+    // 1. Şifreyi Hashle (Artık pad'lenmiş terminal ID kullanıyoruz)
+    const hashedPassword = createHashedPassword(passwordClean, terminalId);
 
+    // 2. Ana Hash'i oluştur
     const hash = createSecure3DHash({
-        terminalId: terminalIdRaw,
+        terminalId: terminalId, // Düzeltilmiş (0'lı) ID
         orderId,
-        amount: amountClean,     // "4535000" (Kuruş)
+        amount: amountClean,
         currency: currencyCode,
         okUrl,
         failUrl,
-        txnType: finalType,      // "sales"
-        installments: finalInstallment, // "" (Boş)
+        txnType: finalType,
+        installments: finalInstallment,
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // [DÜZELTME 3] URL: gt3dengine (Ödeme Sayfası)
-    // VPServlet XML döndüğü için kullanılamaz.
-    let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
+    // URL Belirleme
+    let actionUrl = 'https://sanalposprov.garantibbva.com.tr/servlet/gt3dengine'; // PROD Default
     
     if (gatewayUrl) {
-        // Secret'taki base url'i alıp sonuna doğru path'i ekliyoruz
+        // Secret'ta verilen URL varsa onu kullan, yoksa default prod.
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
+        // Eski garanti.com.tr domaini varsa yenisiyle değiştir
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
             base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
         }
@@ -128,20 +120,20 @@ export async function buildPayHostingForm({
     }
 
     const formFields = {
-        mode: 'TEST',
+        mode: 'PROD', // Canlı ortam için PROD (Test için TEST)
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY', // HTML Formundaki değer
+        secure3dsecuritylevel: 'OOS_PAY',
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
-        terminalid: terminalIdRaw,
+        terminalid: terminalId, // Bankaya giden formda da 0'lı ID olmalı
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        txnamount: amountClean,         // "4535000"
+        txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: finalType,             // "sales"
-        txninstallmentcount: "", // ""
+        txntype: finalType,
+        txninstallmentcount: finalInstallment,
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -156,27 +148,67 @@ export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const storeKey = cleanStr(rawStoreKey);
-        const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
-        const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
+        
+        // Gelen parametrelerin key'leri küçük/büyük harf değişebilir, normalize edelim
+        const getParam = (key) => {
+             const found = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
+             return found ? postBody[found] : '';
+        }
 
-        if (!responseHash || !hashParams) return false;
+        const responseHash = getParam('hash') || getParam('secure3dhash');
+        const hashParams = getParam('hashparams');
 
+        if (!responseHash || !hashParams) {
+            console.warn('Hash parameters missing in callback');
+            return false;
+        }
+
+        // Hashparams stringini : ile bölüp değerleri birleştiriyoruz
         const paramList = String(hashParams).split(':');
         let digestData = '';
+        
         for (const param of paramList) {
             if(!param) continue;
-            const keyLower = param.toLowerCase();
-            const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === keyLower);
-            const value = foundKey ? postBody[foundKey] : '';
-            digestData += value;
+            digestData += getParam(param); // Parametre değerini postBody'den al
         }
+        
+        // En sona StoreKey ekle
         digestData += storeKey;
+
         const calculatedHash = crypto.createHash('sha512').update(digestData, 'utf8').digest('hex').toUpperCase();
-        return (responseHash === calculatedHash);
-    } catch (e) { return false; }
+        
+        const isValid = (responseHash.toUpperCase() === calculatedHash);
+        if (!isValid) {
+             console.warn('Hash Mismatch details:', {
+                 incoming: responseHash,
+                 calculated: calculatedHash,
+                 rawString: digestData
+             });
+        }
+        return isValid;
+
+    } catch (e) { 
+        console.error('Verify Hash Error', e);
+        return false; 
+    }
 }
 
 export function isApproved(postBody) {
-    const procReturnCode = String(postBody.procreturncode || postBody.ProcReturnCode || '');
-    return procReturnCode === '00';
+    // Key normalization
+    const getParam = (key) => {
+        const found = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
+        return found ? postBody[found] : '';
+   }
+   
+   const mdStatus = getParam('mdstatus');
+   const procReturnCode = getParam('procreturncode');
+   const response = getParam('response');
+
+   // MDStatus 1=Tam Doğrulama, 2=Kart Sahibi Kayıtlı Değil(bazı durumlarda), 3=Kart Kayıtlı Değil, 4=Doğrulama denemesi
+   // Genellikle 1 beklenir.
+   const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
+   
+   const procOk = String(procReturnCode) === '00' || String(response).toLowerCase() === 'approved';
+   
+   return mdOk && procOk;
 }
