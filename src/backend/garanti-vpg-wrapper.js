@@ -5,23 +5,23 @@ function cleanStr(str) {
     return String(str || '').trim();
 }
 
-// [ADIM 1] ŞİFRE HASHLEME (SHA1)
+// [ADIM 1] ŞİFRE HASHLEME (SHA1 - Latin1)
+// Banka sistemleriyle uyum için latin1 encoding kullanılıyor.
 function createHashedPassword(password, terminalId) {
     // Terminal ID 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
     
-    // [DEBUG] Şifre kontrolü için log
     console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
 
     return crypto.createHash('sha1')
-        .update(plain, 'utf8')
+        .update(plain, 'latin1')
         .digest('hex')
         .toUpperCase();
 }
 
-// [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-// threed-payment.php mantığı: Taksit=1, Tutar=Tam Sayı
+// [ADIM 2] ANA HASH OLUŞTURMA (SHA512 - Latin1)
+// KURAL: Form verileriyle BİREBİR AYNI olmalı.
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -30,15 +30,18 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        txnType +
-        installments +
+        txnType +      
+        installments + 
         storeKey +
         hashedPassword;
 
-    console.warn('[DEBUG] HASH STRING (PHP Taklidi: Taksit=1, Tutar=TamSayı):', plainText);
+    console.warn('------------------------------------------------');
+    console.warn('[DEBUG] HASH STRING (Taksit: BOŞ/SAYI, Tutar: TamSayı):');
+    console.warn(plainText);
+    console.warn('------------------------------------------------');
 
     return crypto.createHash('sha512')
-        .update(plainText, 'utf8')
+        .update(plainText, 'latin1')
         .digest('hex')
         .toUpperCase();
 }
@@ -69,22 +72,21 @@ export async function buildPayHostingForm({
     const storeKeyClean = cleanStr(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // --- THREED-PAYMENT.PHP DOSYASINI TAKLİT EDEN AYARLAR ---
-
-    // 1. TUTAR: PHP dosyasında "100" (Tam Sayı)
-    // Bizde 4535000 (Kuruş) geliyor -> 45350 (Tam Sayı) yapıyoruz.
+    // [AYAR 1] TUTAR: Tam Sayı (Integer)
+    // threed-payment.php dosyasında value="100" olduğu için kuruşsuz gönderiyoruz.
+    // Örn: 4535000 -> "45350"
     const amountNum = Math.floor(Number(amountMinor) / 100);
     const amountClean = String(amountNum); 
 
-    // 2. TAKSİT: PHP dosyasında "1" (Sabit)
-    // Peşin işlem için "1" gönderiyoruz.
-    let finalInstallment = '1';
-    // Eğer sistemden 3, 6 gibi taksit gelirse onu kullan, yoksa 1.
+    // [AYAR 2] TAKSİT: Kullanıcı Kuralı
+    // Peşin (0, 1 veya boş) ise -> "" (BOŞ STRING)
+    // Taksitli ise -> Taksit Sayısı (Örn: "3")
+    let finalInstallment = '';
     if (installments && installments !== '0' && installments !== '1' && installments !== '') {
         finalInstallment = String(installments);
     }
 
-    // 3. TİP: PHP dosyasında 'sales'
+    // 3. TİP: "sales"
     const finalType = txnType || 'sales';
 
     const now = new Date();
@@ -101,12 +103,12 @@ export async function buildPayHostingForm({
         okUrl,
         failUrl,
         txnType: finalType,      // "sales"
-        installments: finalInstallment, // "1"
+        installments: finalInstallment, // "" veya "3"
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // URL: PHP dosyasındaki gt3dengine
+    // URL: gt3dengine (threed-payment.php içindeki adres)
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
     
     if (gatewayUrl) {
@@ -126,13 +128,13 @@ export async function buildPayHostingForm({
         terminalmerchantid: cleanStr(merchantId),
         terminalid: terminalIdRaw,
         orderid: orderId,
-        // DÜZELTME BURADA: 'customeripaddress' hatası giderildi
+        // [DÜZELTME] Değişken ismi düzeltildi
         customeripaddress: customerIp || '127.0.0.1', 
         customeremailaddress: email,
         txnamount: amountClean,         // "45350"
         txncurrencycode: currencyCode,
         txntype: finalType,             // "sales"
-        txninstallmentcount: finalInstallment, // "1"
+        txninstallmentcount: finalInstallment, // "" veya Sayı
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
