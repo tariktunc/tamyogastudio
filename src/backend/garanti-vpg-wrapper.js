@@ -1,27 +1,20 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- YARDIMCI FONKSİYONLAR ---
-
 function cleanStr(str) {
     return String(str || '').trim();
 }
 
 // [ADIM 1] ŞİFRE HASHLEME (SHA1)
+// PHP: sha1($password . str_pad($terminalId, 9, 0, STR_PAD_LEFT))
 function createHashedPassword(password, terminalId) {
-    // Terminal ID 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
-    
-    console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
-
-    return crypto.createHash('sha1')
-        .update(plain, 'utf8')
-        .digest('hex')
-        .toUpperCase();
+    return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
 }
 
-// [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
+// [ADIM 2] ANA HASH OLUŞTURMA
+// PHP Dosyasındaki Mantık: Taksit=1, Tip=sales, Tutar=TamSayı
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -35,20 +28,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         storeKey +
         hashedPassword;
 
-    console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (Tutar:Noktalı, Taksit:1):');
-    console.warn(plainText);
-    console.warn('------------------------------------------------');
+    console.warn('[DEBUG] HASH STRING (threed-payment.php Taklidi):', plainText);
 
     return crypto.createHash('sha512')
         .update(plainText, 'utf8')
         .digest('hex')
         .toUpperCase();
 }
-
-// =========================================================
-// FORM OLUŞTURMA
-// =========================================================
 
 export async function buildPayHostingForm({
   orderId,
@@ -62,11 +48,11 @@ export async function buildPayHostingForm({
   email = 'musteri@example.com'
 }) {
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),       // 30691297
-        getSecret('GARANTI_STORE_NO'),          // 7000679
-        getSecret('GARANTI_TERMINAL_PASSWORD'), // 123qweASD/
-        getSecret('GARANTI_ENC_KEY'),           // 12345678
-        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garantibbva.com.tr
+        getSecret('GARANTI_TERMINAL_ID'),
+        getSecret('GARANTI_STORE_NO'),
+        getSecret('GARANTI_TERMINAL_PASSWORD'),
+        getSecret('GARANTI_ENC_KEY'),
+        getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
@@ -76,19 +62,21 @@ export async function buildPayHostingForm({
     const storeKeyClean = cleanStr(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // [DÜZELTME 1] TUTAR FORMATI: 45350.00 (Noktalı)
-    // Önceki denemede Tam Sayı yaptık hata verdi, şimdi standart formata dönüyoruz.
-    const amountNum = Number(amountMinor) / 100;
-    const amountClean = amountNum.toFixed(2); 
+    // --- THREED-PAYMENT.PHP AYARLARI ---
 
-    // [DÜZELTME 2] TAKSİT: "1"
-    // threed-payment.php dosyasında value="1" olduğu için "1" gönderiyoruz.
+    // 1. TUTAR: PHP dosyasında value="100" (Tam Sayı)
+    // Bizde 4535000 (Kuruş) geliyor -> 45350 yapıyoruz.
+    const amountNum = Math.floor(Number(amountMinor) / 100);
+    const amountClean = String(amountNum); 
+
+    // 2. TAKSİT: PHP dosyasında value="1"
+    // Peşin işlem için "1" gönderiyoruz.
     let finalInstallment = '1';
     if (installments && installments !== '0' && installments !== '1' && installments !== '') {
         finalInstallment = String(installments);
     }
 
-    // 3. İŞLEM TİPİ: "sales"
+    // 3. TİP: PHP dosyasında 'sales' gönderiliyor
     const finalType = txnType || 'sales';
 
     const now = new Date();
@@ -100,7 +88,7 @@ export async function buildPayHostingForm({
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
-        amount: amountClean,     // "45350.00"
+        amount: amountClean,     // "45350"
         currency: currencyCode,
         okUrl,
         failUrl,
@@ -110,8 +98,9 @@ export async function buildPayHostingForm({
         hashedPassword
     });
 
-    // URL: gt3dengine
+    // URL: PHP dosyasındaki gt3dengine
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
+    
     if (gatewayUrl) {
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
@@ -129,9 +118,9 @@ export async function buildPayHostingForm({
         terminalmerchantid: cleanStr(merchantId),
         terminalid: terminalIdRaw,
         orderid: orderId,
-        customeripaddress: customerIp || '127.0.0.1',
+        customeripaddress: customeripaddress || '127.0.0.1', // Düzeltme: Değişken adı kontrolü
         customeremailaddress: email,
-        txnamount: amountClean,         // "45350.00"
+        txnamount: amountClean,         // "45350"
         txncurrencycode: currencyCode,
         txntype: finalType,             // "sales"
         txninstallmentcount: finalInstallment, // "1"
