@@ -1,26 +1,12 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-// --- HELPER: Store Key Normalization ---
 function normalizeStoreKey(key) {
     const trimmedKey = String(key || '').trim();
-    
-    // Hex Check: Only 0-9, A-F and even length
-    const isHex = /^[0-9A-Fa-f]+$/.test(trimmedKey) && (trimmedKey.length % 2 === 0);
-    
-    if (isHex) {
-        try {
-            const decoded = Buffer.from(trimmedKey, 'hex').toString('utf8');
-            console.log('[DEBUG] Store Key: HEX detected & decoded.');
-            return decoded;
-        } catch (e) {
-            console.warn('[DEBUG] Store Key: Hex decode failed, using raw.');
-            return trimmedKey;
-        }
-    }
-    console.log('[DEBUG] Store Key: Treated as PLAIN TEXT.');
+    console.log('[DEBUG] Store Key: Forced RAW mode (no hex decode).');
     return trimmedKey;
 }
+
 
 // --- HELPER: Password Hashing (SHA1) ---
 function createHashedPassword(password, terminalId) {
