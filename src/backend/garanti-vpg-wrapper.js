@@ -5,15 +5,15 @@ function cleanStr(str) {
     return String(str || '').trim();
 }
 
-// [ADIM 1] ŞİFRE HASHLEME (SHA1 - Latin1 Fix)
-// Banka örneklerindeki gibi TerminalID 9 haneye tamamlanır.
-// Şifredeki '/' karakteri için 'latin1' encoding kullanılır.
+// [ADIM 1] ŞİFRE HASHLEME (SHA1 - Latin1)
+// mewebstudio Kütüphanesi Mantığı: SHA1(Password + PadlenmişTerminalID)
 function createHashedPassword(password, terminalId) {
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
     
     console.warn(`[DEBUG] HashedPass Input: ${password.substring(0,2)}*** + ${terminalIdPadded}`);
 
+    // Garanti için latin1 encoding en güvenli yoldur
     return crypto.createHash('sha1')
         .update(plain, 'latin1') 
         .digest('hex')
@@ -21,7 +21,7 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-// 'threed-payment.php' yapısına göre sıralama.
+// mewebstudio Kütüphanesi Mantığı: Tutar=Integer, Taksit=Boş (Peşin ise)
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
@@ -36,7 +36,7 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (PHP Yapısı: Taksit=1, Tutar=Kuruş):');
+    console.warn('[DEBUG] HASH STRING (mewebstudio Mantığı: Tutar=TamSayı, Taksit=Boş):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -72,47 +72,54 @@ export async function buildPayHostingForm({
     const storeKeyClean = cleanStr(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // [YAPI 1] TUTAR: Kuruş Cinsinden Tam Sayı (Minor Unit)
-    // PHP kütüphanelerinde (mewebstudio vb.) 1.00 TL -> 100 olarak gider.
-    // Wix amountMinor zaten bu formattadır (Örn: 4535000).
-    // String'e çevirip gönderiyoruz.
-    const amountClean = String(amountMinor); 
+    // [DÜZELTME 1] TUTAR: Kuruş Cinsinden Tam Sayı (Integer)
+    // mewebstudio kütüphanesi: (int) round($amount * 100)
+    // Wix amountMinor zaten bu formattadır. Örn: "4535000"
+    // Nokta YOK.
+    const amountNum = Math.floor(Number(amountMinor) / 100); // Eğer Wix 4535000 gönderiyorsa bu 45350 olur.
+    // DİKKAT: Wix amountMinor zaten kuruş mu? Evet.
+    // Eğer Wix 45350.00 TL için 4535000 gönderiyorsa, Garanti 45350 (100'e bölünmüş halini) değil,
+    // direkt kuruş halini isteyebilir mi?
+    // Garanti VPG dökümanı "100" = 1.00 TL der. Yani son iki hane kuruştur.
+    // Wix 100 TL için 10000 gönderir.
+    // O zaman bizim "10000" göndermemiz lazım.
+    const amountClean = String(amountMinor); // Direkt Kuruş (Örn: 4535000)
 
-    // [YAPI 2] TAKSİT: "1"
-    // threed-payment.php dosyasında peşin işlem "1" olarak gönderiliyor.
-    let finalInstallment = '1';
+    // [DÜZELTME 2] TAKSİT: Boş String (Peşin ise)
+    // mewebstudio kütüphanesi: installment > 1 ? installment : ''
+    let finalInstallment = '';
     if (installments && installments !== '0' && installments !== '1' && installments !== '') {
         finalInstallment = String(installments);
     }
 
-    // [YAPI 3] TİP: "sales"
+    // 3. TİP: "sales"
     const finalType = txnType || 'sales';
 
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // Hash Hesaplama
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
-        amount: amountClean,
+        amount: amountClean,     // "4535000" (Kuruş)
         currency: currencyCode,
         okUrl,
         failUrl,
-        txnType: finalType,
-        installments: finalInstallment,
+        txnType: finalType,      // "sales"
+        installments: finalInstallment, // "" (Boş)
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // URL: gt3dengine
+    // [DÜZELTME 3] URL: gt3dengine (Ödeme Sayfası)
+    // VPServlet XML döndüğü için kullanılamaz.
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
     
-    // Secret içinde farklı base url varsa onu kullan
     if (gatewayUrl) {
+        // Secret'taki base url'i alıp sonuna doğru path'i ekliyoruz
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
             base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
@@ -123,19 +130,18 @@ export async function buildPayHostingForm({
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: '3D_OOS_PAY',
+        secure3dsecuritylevel: 'OOS_PAY', // HTML Formundaki değer
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: cleanStr(merchantId),
         terminalid: terminalIdRaw,
         orderid: orderId,
-        // [DÜZELTME] Yazım hatası giderildi
-        customeripaddress: customerIp || '127.0.0.1', 
+        customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        txnamount: amountClean,
+        txnamount: amountClean,         // "4535000"
         txncurrencycode: currencyCode,
-        txntype: finalType,
-        txninstallmentcount: finalInstallment,
+        txntype: finalType,             // "sales"
+        txninstallmentcount: finalInstallment, // ""
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
