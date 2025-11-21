@@ -141,7 +141,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,         // "4535000"
         txncurrencycode: currencyCode,
         txntype: finalType,             // "sales"
-        txninstallmentcount: finalInstallment, // ""
+        txninstallmentcount: "", // ""
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
