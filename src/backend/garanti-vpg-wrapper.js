@@ -9,20 +9,13 @@ function cleanStr(str) {
 
 // [ŞİFRE HASHLEME]: SHA1(Password + 9 Haneli TerminalID)
 function createHashedPassword(password, terminalId) {
-    // Terminal ID 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
-    
-    console.log('[DEBUG] HashedPassword Input (Plain):', plain);
-
-    return crypto.createHash('sha1')
-        .update(plain, 'utf8')
-        .digest('hex')
-        .toUpperCase();
+    return crypto.createHash('sha1').update(plain, 'utf8').digest('hex').toUpperCase();
 }
 
-// [ANA HASH]: SHA512(8 Haneli TerminalID + ... + Taksit + ... + StoreKey + HashedPass)
-function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, txnType, installments, storeKey, hashedPassword }) {
+// [ANA HASH]: SHA512
+function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
     const plainText = 
         terminalId +
         orderId +
@@ -30,8 +23,8 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        txnType +
-        installments + 
+        typeForHash +    // DİKKAT: PHP Örneğine göre burası boş ("") olmalı
+        installForHash + // DİKKAT: PHP Örneğine göre peşin ise "0" olmalı
         storeKey +
         hashedPassword;
 
@@ -40,14 +33,11 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
     console.log(plainText);
     console.log('------------------------------------------------');
 
-    return crypto.createHash('sha512')
-        .update(plainText, 'utf8')
-        .digest('hex')
-        .toUpperCase();
+    return crypto.createHash('sha512').update(plainText, 'utf8').digest('hex').toUpperCase();
 }
 
 // =========================================================
-// FORM OLUŞTURMA (3D_OOS_FULL)
+// FORM OLUŞTURMA (3D_OOS_FULL - PHP & HTML HİBRİT MANTIK)
 // =========================================================
 
 export async function buildPayHostingForm({
@@ -71,38 +61,38 @@ export async function buildPayHostingForm({
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    const terminalIdRaw = cleanStr(rawTerminalId); // 8 Haneli
+    const terminalIdRaw = cleanStr(rawTerminalId);
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
     
     // Tutar: "100.00" formatı
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
-
-    // Para Birimi: 949
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // [DÜZELTME BURADA]: HTML Dokümanına göre Peşin işlemde "0" DEĞİL, BOŞ STRING "" gitmeli.
-    // Eğer installments yoksa, "0" ise veya "1" ise -> "" (Boş) gönder.
-    // Eğer "6" ise -> "6" gönder.
-    let taksit = '';
-    if (installments && installments !== '0' && installments !== '1') {
-        taksit = String(installments);
-    }
-    // Aksi halde taksit = '' (boş string) kalır.
+    // --- KRİTİK AYRIM: FORM vs HASH ---
 
-    const typeStr = txnType || 'sales';
+    // 1. TAKSİT MANTIĞI
+    let installForForm = ''; // HTML: Peşin ise boş
+    let installForHash = '0'; // PHP: Peşin ise "0"
+    
+    if (installments && installments !== '0' && installments !== '1') {
+        installForForm = String(installments);
+        installForHash = String(installments);
+    }
+
+    // 2. İŞLEM TİPİ MANTIĞI
+    const typeForForm = txnType || 'sales'; // HTML: "sales" olmalı
+    const typeForHash = ''; // PHP Örneğinde $type = ""; olarak kodlanmış. Hash'e boş girmeli.
 
     // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 1. Şifre Hash (9 Haneli ID ile)
+    // Hash Hesaplama
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
-
-    // 2. Ana Hash (8 Haneli ID ve Taksit ile)
-    // Not: Taksit peşinse Hash içine hiç karakter girmez (Boş string birleşir)
+    
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
@@ -110,8 +100,8 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        txnType: typeStr,
-        installments: taksit, 
+        typeForHash: typeForHash,       // Hash'e BOŞ gidiyor
+        installForHash: installForHash, // Hash'e "0" gidiyor (Peşin ise)
         storeKey: storeKeyClean,
         hashedPassword
     });
@@ -132,8 +122,8 @@ export async function buildPayHostingForm({
         customeremailaddress: email,
         txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: typeStr,
-        txninstallmentcount: taksit, // Form'a BOŞ ("") olarak basılacak
+        txntype: typeForForm,            // Form'a "sales" gidiyor
+        txninstallmentcount: installForForm, // Form'a "" gidiyor (Peşin ise)
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
