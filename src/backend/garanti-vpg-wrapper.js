@@ -29,13 +29,13 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
         currency +
         okUrl +
         failUrl +
-        typeForHash +    // PHP/C# Kuralı: Boş ""
-        installForHash + // PHP/C# Kuralı: "0"
+        typeForHash +    // "sales"
+        installForHash + // "0"
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (URL: gt3dengine / Hibrit Mantık):');
+    console.warn('[DEBUG] HASH STRING (Sales + 0 Mantığı):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -73,17 +73,16 @@ export async function buildPayHostingForm({
     const terminalIdRaw = cleanStr(rawTerminalId);
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
-    const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // Tutar: 45350.00
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
+    const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
 
-    // --- HİBRİT AYARLAR (BANKA EKRANI İÇİN) ---
-    
+    // --- YENİ KOMBİNASYON: SALES + 0 ---
+
     // 1. TAKSİT
-    // Form (HTML): Boş ""
-    // Hash (PHP/C#): "0"
+    // Form: Peşin ise boş ""
+    // Hash: Peşin ise "0" (KESİN)
     let installForForm = '';
     let installForHash = '0';
     
@@ -93,10 +92,10 @@ export async function buildPayHostingForm({
     }
 
     // 2. İŞLEM TİPİ
-    // Form (HTML): "sales"
-    // Hash (PHP/C#): ""
+    // Form: "sales"
+    // Hash: "sales" (KESİN)
     const typeForForm = txnType || 'sales';
-    const typeForHash = ''; 
+    const typeForHash = txnType || 'sales';
 
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
@@ -111,23 +110,16 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        typeForHash: typeForHash,       // Boş
+        typeForHash: typeForHash,       // "sales"
         installForHash: installForHash, // "0"
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // [DÜZELTME] URL: gt3dengine (Ödeme Ekranı İçin Zorunlu)
-    // Domain: garantibbva.com.tr (Yeni Domain)
+    // URL Ayarı: gt3dengine
     let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
-    
-    // Secret içinde eski domain varsa bile override et
     if (gatewayUrl) {
-        // Sadece base domain kısmını alıp sonuna doğru path'i ekleyelim
-        // Ancak en garantisi yukarıdaki sabit URL'i kullanmaktır.
-        // Kod güvenliği için secret'tan gelen base url'i gt3dengine ile birleştirelim:
         let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
-        // Eğer eski domain ise yenisiyle değiştir
         if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
             base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
         }
@@ -148,7 +140,7 @@ export async function buildPayHostingForm({
         txnamount: amountClean,
         txncurrencycode: currencyCode,
         txntype: typeForForm,           // "sales"
-        txninstallmentcount: installForForm, // ""
+        txninstallmentcount: installForForm, // "" (Boş)
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
@@ -159,10 +151,6 @@ export async function buildPayHostingForm({
     return { actionUrl, formFields };
 }
 
-// =========================================================
-// DÖNÜŞ KONTROLÜ
-// =========================================================
-
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
@@ -170,10 +158,7 @@ export async function verifyCallbackHash(postBody) {
         const responseHash = postBody.hash || postBody.HASH || postBody.secure3dhash;
         const hashParams = postBody.hashparams || postBody.hashParams || postBody.HASHPARAMS;
 
-        if (!responseHash || !hashParams) {
-            console.warn('[DEBUG] Callback: HashParams eksik.');
-            return false;
-        }
+        if (!responseHash || !hashParams) return false;
 
         const paramList = String(hashParams).split(':');
         let digestData = '';
