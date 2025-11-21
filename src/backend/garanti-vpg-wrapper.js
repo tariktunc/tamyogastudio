@@ -8,10 +8,7 @@ function cleanStr(str) {
 }
 
 // [ADIM 1] ŞİFRE HASHLEME (SHA1)
-// Doküman Kaynağı (PHP): str_pad((int)$terminalId, 9, 0, STR_PAD_LEFT)
-// Doküman Kaynağı (C#): provisionPassword + "0" + terminalId
 function createHashedPassword(password, terminalId) {
-    // Terminal ID, şifre ile birleşirken 9 haneye tamamlanır (Başına 0 eklenir)
     const terminalIdPadded = String(terminalId).trim().padStart(9, '0');
     const plain = password + terminalIdPadded;
     
@@ -24,22 +21,21 @@ function createHashedPassword(password, terminalId) {
 }
 
 // [ADIM 2] ANA HASH OLUŞTURMA (SHA512)
-// Doküman Kaynağı (PHP): hash('sha512', $terminalId . $orderId ... )
 function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, failUrl, typeForHash, installForHash, storeKey, hashedPassword }) {
     const plainText = 
-        terminalId +      // DİKKAT: Burası 8 haneli (orijinal) hali olacak
+        terminalId +
         orderId +
         amount +
         currency +
         okUrl +
         failUrl +
-        typeForHash +     // PHP örneğine göre boş ""
-        installForHash +  // PHP örneğine göre "0"
+        typeForHash +    // PHP/C# Kuralı: Boş ""
+        installForHash + // PHP/C# Kuralı: "0"
         storeKey +
         hashedPassword;
 
     console.warn('------------------------------------------------');
-    console.warn('[DEBUG] HASH STRING (Doküman Tam Uyumlu):');
+    console.warn('[DEBUG] HASH STRING (URL: gt3dengine / Hibrit Mantık):');
     console.warn(plainText);
     console.warn('------------------------------------------------');
 
@@ -50,7 +46,7 @@ function createSecure3DHash({ terminalId, orderId, amount, currency, okUrl, fail
 }
 
 // =========================================================
-// FORM OLUŞTURMA FONKSİYONU
+// FORM OLUŞTURMA
 // =========================================================
 
 export async function buildPayHostingForm({
@@ -64,33 +60,30 @@ export async function buildPayHostingForm({
   customerIp,
   email = 'musteri@example.com'
 }) {
-    // 1. Secret Anahtarları Çek
     const [rawTerminalId, merchantId, password, rawStoreKey, gatewayUrl] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),       // Örn: 30691297
-        getSecret('GARANTI_STORE_NO'),          // Örn: 7000679
-        getSecret('GARANTI_TERMINAL_PASSWORD'), // Örn: 123qweASD/
-        getSecret('GARANTI_ENC_KEY'),           // Örn: 12345678
-        getSecret('GARANTI_CALLBACK_PATH')      // https://sanalposprovtest.garantibbva.com.tr
+        getSecret('GARANTI_TERMINAL_ID'),
+        getSecret('GARANTI_STORE_NO'),
+        getSecret('GARANTI_TERMINAL_PASSWORD'),
+        getSecret('GARANTI_ENC_KEY'),
+        getSecret('GARANTI_CALLBACK_PATH')
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) throw new Error('Garanti Secrets missing!');
 
-    const terminalIdRaw = cleanStr(rawTerminalId); // 8 Haneli
+    const terminalIdRaw = cleanStr(rawTerminalId);
     const passwordClean = cleanStr(password);
     const storeKeyClean = cleanStr(rawStoreKey);
+    const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
     
-    // 2. Tutar Formatı: "100" veya "45350.00" (PHP örneğinde "100" tam sayı verilmiş ama VPG genelde noktalı ister)
-    // Biz Wix'ten gelen kuruşu (4535000) -> 45350.00 formatına çevirelim.
+    // Tutar: 45350.00
     const amountNum = Number(amountMinor) / 100;
     const amountClean = amountNum.toFixed(2); 
 
-    const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : String(currency);
-
-    // --- DOKÜMANA GÖRE HİBRİT AYARLAR ---
-
-    // A. TAKSİT MANTIĞI
-    // Form (HTML): Boş "" (HTML kuralı gereği)
-    // Hash (PHP): "0" (PHP örneği gereği $installmentCount = 0)
+    // --- HİBRİT AYARLAR (BANKA EKRANI İÇİN) ---
+    
+    // 1. TAKSİT
+    // Form (HTML): Boş ""
+    // Hash (PHP/C#): "0"
     let installForForm = '';
     let installForHash = '0';
     
@@ -99,22 +92,18 @@ export async function buildPayHostingForm({
         installForHash = String(installments);
     }
 
-    // B. İŞLEM TİPİ MANTIĞI
-    // Form (HTML): "sales" (HTML kuralı gereği)
-    // Hash (PHP): "" (PHP örneği gereği $type = "")
+    // 2. İŞLEM TİPİ
+    // Form (HTML): "sales"
+    // Hash (PHP/C#): ""
     const typeForForm = txnType || 'sales';
     const typeForHash = ''; 
 
-    // Zaman Damgası
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 
-    // 3. Hash Hesaplama
-    // Adım 1: Şifreyi Hashle (Terminal ID 9 hane olur)
     const hashedPassword = createHashedPassword(passwordClean, terminalIdRaw);
 
-    // Adım 2: Ana Hash'i Oluştur (Terminal ID 8 hane kalır)
     const hash = createSecure3DHash({
         terminalId: terminalIdRaw,
         orderId,
@@ -122,25 +111,27 @@ export async function buildPayHostingForm({
         currency: currencyCode,
         okUrl,
         failUrl,
-        typeForHash: typeForHash,       // "" (Boş)
-        installForHash: installForHash, // "0" (Peşin ise)
+        typeForHash: typeForHash,       // Boş
+        installForHash: installForHash, // "0"
         storeKey: storeKeyClean,
         hashedPassword
     });
 
-    // 4. URL Ayarı (VPServlet)
-    const cleanBase = String(gatewayUrl || 'https://sanalposprovtest.garantibbva.com.tr').replace(/\/+$/, '');
-    // Dokümanda belirtilen path: VPServlet
-    let actionUrl = cleanBase.endsWith('VPServlet') ? cleanBase : `${cleanBase}/VPServlet`;
+    // [DÜZELTME] URL: gt3dengine (Ödeme Ekranı İçin Zorunlu)
+    // Domain: garantibbva.com.tr (Yeni Domain)
+    let actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
     
-    // Eğer secret'ta sadece base url (garantibbva.com.tr) varsa sonuna ekle
-    if (!actionUrl.includes('VPServlet')) {
-         // Eski gt3dengine varsa değiştir, yoksa ekle
-         if (cleanBase.includes('gt3dengine')) {
-             actionUrl = cleanBase.replace('servlet/gt3dengine', 'VPServlet');
-         } else {
-             actionUrl = `${cleanBase}/VPServlet`;
-         }
+    // Secret içinde eski domain varsa bile override et
+    if (gatewayUrl) {
+        // Sadece base domain kısmını alıp sonuna doğru path'i ekleyelim
+        // Ancak en garantisi yukarıdaki sabit URL'i kullanmaktır.
+        // Kod güvenliği için secret'tan gelen base url'i gt3dengine ile birleştirelim:
+        let base = String(gatewayUrl).replace('/VPServlet', '').replace('/servlet/gt3dengine', '').replace(/\/+$/, '');
+        // Eğer eski domain ise yenisiyle değiştir
+        if(base.includes('garanti.com.tr') && !base.includes('garantibbva')) {
+            base = base.replace('garanti.com.tr', 'garantibbva.com.tr');
+        }
+        actionUrl = `${base}/servlet/gt3dengine`;
     }
 
     const formFields = {
@@ -156,8 +147,8 @@ export async function buildPayHostingForm({
         customeremailaddress: email,
         txnamount: amountClean,
         txncurrencycode: currencyCode,
-        txntype: typeForForm,           // Form'a "sales"
-        txninstallmentcount: installForForm, // Form'a ""
+        txntype: typeForForm,           // "sales"
+        txninstallmentcount: installForForm, // ""
         successurl: okUrl,
         errorurl: failUrl,
         txntimestamp: timestamp,
