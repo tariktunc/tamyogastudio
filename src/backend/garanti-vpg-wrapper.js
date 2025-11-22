@@ -150,22 +150,22 @@ export async function buildPayHostingForm({
         hashedPassword: hashedPassword // 9 haneli ID ile üretilmiş
     });
 
-    // 4. Banka URL - KRİTİK: Doğru endpoint kullan!
-    // OOS_PAY için VPServlet endpoint'i kullanılmalı
-    const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/VPServlet';
+    // 4. Banka URL  
+    // NOT: OOS_PAY için gt3dengine endpoint kullanılıyor
+    // VPServlet XML API içindir, gt3dengine HTML form POST içindir
+    const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
 
     // 5. Form Alanları
     // ÖNEMLI: Garanti'nin beklediği EXACT field name'ler
-    // OOS_PAY için PROVOOS user ID kullanılabilir
     const formFields = {
         // Sistem alanları
         mode: 'TEST',
         apiversion: '512',
         secure3dsecuritylevel: 'OOS_PAY', // Ortak Ödeme Sayfası
         
-        // Kullanıcı bilgileri - OOS için PROVOOS kullan
-        terminalprovuserid: 'PROVOOS',
-        terminaluserid: 'PROVOOS',
+        // Kullanıcı bilgileri - Test dökümanına göre PROVAUT kullan
+        terminalprovuserid: 'PROVAUT',
+        terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
         terminalid: terminalId, // 8 veya 9 haneli, olduğu gibi
         
