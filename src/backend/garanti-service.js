@@ -135,7 +135,7 @@ export async function redirect(request) {
       okUrl,
       failUrl,
       customerIp,
-      installments: '1' // Peşin ödeme
+      installments: '' // Peşin ödeme
     });
 
     // Form input'larını HTML'e dönüştür
