@@ -11,8 +11,6 @@ function clean(val) {
 function processStoreKey(rawStoreKey) {
     const cleaned = clean(rawStoreKey);
     
-    // 48 karakter = HEX format (24 byte * 2)
-    // 24 karakter = TEXT format
     if (cleaned.length === 48) {
         // HEX'ten TEXT'e çevir
         const textKey = Buffer.from(cleaned, 'hex').toString('utf8');
@@ -30,20 +28,22 @@ function processStoreKey(rawStoreKey) {
 
 /**
  * [ADIM 1] Şifre Hashleme (SHA1)
- * GARANTİ DOKÜMANI: password + "0" + terminalId
- * NOT: Terminal ID'nin başına "0" ekleniyor, 9 haneye tamamlama yok!
+ * PHP KODUNA GÖRE: password + terminalId(9 haneli)
+ * DİKKAT: "0" YOK! Sadece 9 haneye tamamlanmış terminal ID
  */
 function createHashedPassword(password, terminalId) {
-    // GARANTİ'NİN FORMÜLÜ: password + "0" + terminalId
-    const rawData = password + "0" + terminalId;
+    // Terminal ID'yi 9 haneye tamamla
+    const paddedTerminalId = terminalId.padStart(9, '0');
+    
+    // PHP: $password . str_pad((int)$terminalId, 9, 0, STR_PAD_LEFT)
+    const rawData = password + paddedTerminalId; // "0" YOK!
     
     console.log('[Hash-Step1] Password:', `***${password.length} chars***`);
-    console.log('[Hash-Step1] Formula: password + "0" + terminalId');
-    console.log('[Hash-Step1] Terminal ID:', terminalId);
+    console.log('[Hash-Step1] Terminal ID (9 haneli):', paddedTerminalId);
+    console.log('[Hash-Step1] Formula: password + terminalId(9 haneli)');
 
-    // ISO-8859-9 (Turkish) encoding
     const hash = crypto.createHash('sha1')
-        .update(rawData, 'latin1')  // latin1 = ISO-8859-1/9
+        .update(rawData, 'latin1')  // ISO-8859-9
         .digest('hex')
         .toUpperCase();
     
@@ -53,24 +53,27 @@ function createHashedPassword(password, terminalId) {
 
 /**
  * [ADIM 2] Güvenlik Hash'i (SHA512)
- * GARANTİ DOKÜMANI: terminalId + orderId + amount + currencyCode + successUrl + errorUrl + type + installmentCount + storeKey + hashedPassword
+ * PHP: terminalId . orderId . amount . currencyCode . successUrl . errorUrl . type . installmentCount . storeKey . hashedPassword
  */
 function createSecure3DHash(data) {
-    // GARANTİ'NİN RESMİ SIRASI:
+    // Terminal ID 9 haneli olmalı
+    const paddedTerminalId = data.terminalId.padStart(9, '0');
+    
+    // PHP koduna göre sıralama
     const plainText = 
-        data.terminalId +      // Terminal ID (olduğu gibi)
+        paddedTerminalId +     // 9 haneli terminal ID
         data.orderId + 
         data.amount + 
-        data.currencyCode +    // CURRENCY CODE BURADA!
-        data.successUrl +      // Success URL
-        data.errorUrl +        // Error URL
-        data.txnType +         // Type (sales)
-        data.installment +     // Installment (peşin için boş)
+        data.currencyCode +
+        data.successUrl +
+        data.errorUrl +
+        data.txnType +
+        data.installment +     // Peşin için boş veya "0"
         data.storeKey + 
         data.hashedPassword;
 
     console.log('[Hash-Step2] Hash String Components:');
-    console.log('  1. TerminalID:', data.terminalId);
+    console.log('  1. TerminalID (9 haneli):', paddedTerminalId);
     console.log('  2. OrderID:', data.orderId);
     console.log('  3. Amount:', data.amount);
     console.log('  4. CurrencyCode:', data.currencyCode);
@@ -83,9 +86,8 @@ function createSecure3DHash(data) {
     
     console.log('[Hash-Step2] Full String Length:', plainText.length);
 
-    // ISO-8859-9 encoding
     const hash = crypto.createHash('sha512')
-        .update(plainText, 'latin1')  // latin1 = ISO-8859-1/9
+        .update(plainText, 'latin1')  // ISO-8859-9
         .digest('hex')
         .toUpperCase();
     
@@ -105,16 +107,16 @@ export async function buildPayHostingForm({
     email = 'test@example.com'
 }) {
     console.log('\n' + '='.repeat(60));
-    console.log('🔴 GARANTI OOS_PAY - PRODUCTION (FIXED VERSION)');
+    console.log('🔴 GARANTI 3D_OOS_FULL - PHP CODE VERSION');
     console.log('='.repeat(60));
     console.log('Order ID:', orderId);
     console.log('Amount (kuruş):', amountMinor);
     console.log('Currency:', currency);
     console.log('Customer IP:', customerIp);
     
-    // 1. Secret'ları Çek - CANLI SİSTEM
+    // 1. Secret'ları Çek
     const [rawTerminalId, merchantId, userId, provUserId, password, rawStoreKey] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),      // 10380183
+        getSecret('GARANTI_TERMINAL_ID'),      // 010380183 veya 10380183
         getSecret('GARANTI_MERCHANT_ID'),      // 3066677
         getSecret('GARANTI_USER_ID'),          // 37387651730
         getSecret('GARANTI_PROV_USER_ID'),     // PROVOOS
@@ -123,78 +125,74 @@ export async function buildPayHostingForm({
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password || !merchantId) {
-        throw new Error('❌ Garanti CANLI sistem secret\'ları eksik!');
+        throw new Error('❌ Garanti secret\'ları eksik!');
     }
 
-    console.log('\n[Secrets Loaded - PRODUCTION]');
-    console.log('  Terminal ID:', rawTerminalId);
+    console.log('\n[Secrets Loaded]');
+    console.log('  Terminal ID (raw):', rawTerminalId);
     console.log('  Merchant ID:', merchantId);
     console.log('  User ID:', userId);
-    console.log('  Prov User ID:', provUserId || 'PROVOOS');
-    console.log('  Password:', `***${password.length} chars***`);
-    console.log('  Store Key (raw):', `***${rawStoreKey.length} chars***`);
+    console.log('  Prov User ID:', provUserId);
 
     // Store Key'i işle (HEX'ten TEXT'e çevir)
     const storeKey = processStoreKey(rawStoreKey);
-    console.log('  Store Key (processed):', `***${storeKey.length} chars*** (should be 24)`);
+    console.log('  Store Key (processed):', `***${storeKey.length} chars***`);
 
-    // 2. Terminal ID - OLDUĞU GİBİ KULLAN (9 haneye tamamlama YOK)
-    const terminalId = clean(rawTerminalId); // 8 haneli kalacak: 10380183
+    // Terminal ID'yi temizle (0'lardan kurtul)
+    const terminalId = clean(rawTerminalId).replace(/^0+/, ''); // 10380183
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
-    const amount = String(amountMinor); // Kuruş cinsinden
+    const amount = String(amountMinor);
 
-    // TAKSİT AYARI - Peşin için BOŞ
+    // Taksit - PHP kodunda installmentCount = 0 görünüyor
     let installmentStr = '';
-    const installmentInput = String(installments || '').trim();
-    if (installmentInput === '0' || installmentInput === '1' || installmentInput === '') {
-        installmentStr = ''; // PEŞİN = BOŞ STRING
+    if (installments === '' || installments === '0' || installments === '1') {
+        installmentStr = ''; // Peşin için boş
     } else {
-        installmentStr = installmentInput; // Taksitli
+        installmentStr = installments;
     }
 
     const type = txnType || 'sales';
 
     console.log('\n[Processed Values]');
-    console.log('  Terminal ID:', terminalId, `(${terminalId.length} digits) - NO PADDING`);
+    console.log('  Terminal ID (cleaned):', terminalId);
     console.log('  Merchant ID:', merchantId);
     console.log('  Currency Code:', currencyCode);
     console.log('  Amount (kuruş):', amount);
-    console.log('  Amount (TL):', (parseInt(amount) / 100).toFixed(2));
-    console.log('  Installment:', installmentStr === '' ? 'EMPTY (Peşin)' : installmentStr);
+    console.log('  Installment:', installmentStr === '' ? 'EMPTY' : installmentStr);
     console.log('  Type:', type);
 
-    // 3. Hash Hesaplama - GARANTİ DOKÜMANI FORMÜLÜ
+    // 3. Hash Hesaplama - PHP koduna göre
     const hashedPassword = createHashedPassword(clean(password), terminalId);
     
     const securityHash = createSecure3DHash({
-        terminalId: terminalId,      // Olduğu gibi (8 haneli)
+        terminalId: terminalId,
         orderId: orderId,
         amount: amount,
-        currencyCode: currencyCode,  // CURRENCY CODE EKLENDI!
-        successUrl: okUrl,           // Doğru sırada
-        errorUrl: failUrl,           // Doğru sırada
+        currencyCode: currencyCode,
+        successUrl: okUrl,
+        errorUrl: failUrl,
         txnType: type,
         installment: installmentStr,
         storeKey: storeKey,
         hashedPassword: hashedPassword
     });
 
-    // 4. CANLI URL
+    // 4. URL
     const actionUrl = 'https://sanalposprov.garanti.com.tr/servlet/gt3dengine';
     console.log('\n🔴 PRODUCTION URL:', actionUrl);
 
-    // 5. Form Alanları - Terminal ID'yi 9 haneye tamamla (form için)
-    const formTerminalId = terminalId.padStart(9, '0'); // Form için 9 haneli: 010380183
+    // 5. Form Alanları - Terminal ID 9 haneli olmalı
+    const formTerminalId = terminalId.padStart(9, '0'); // 010380183
     
     const formFields = {
-        // Sistem alanları
+        // Sistem alanları - CANLI için MODE yok
         apiversion: '512',
-        secure3dsecuritylevel: '3D_OOS_FULL',  // 3D'li güvenli ödeme
+        secure3dsecuritylevel: '3D_OOS_FULL',
         
-        // Terminal bilgileri - 9 HANELİ
-        terminalid: formTerminalId,  // 9 haneli: 010380183
+        // Terminal bilgileri
+        terminalid: formTerminalId,
         terminalmerchantid: clean(merchantId),
-        terminaluserid: clean(userId),  // 37387651730
+        terminaluserid: clean(userId),
         terminalprovuserid: clean(provUserId || 'PROVOOS'),
         
         // İşlem bilgileri
@@ -215,7 +213,7 @@ export async function buildPayHostingForm({
         // Güvenlik
         secure3dhash: securityHash,
         
-        // Opsiyonel
+        // Diğer
         lang: 'tr',
         refreshtime: '10',
         txntimestamp: Date.now().toString()
@@ -230,7 +228,7 @@ export async function buildPayHostingForm({
         console.log(`${key.padEnd(25)} = ${displayValue}`);
     });
     console.log('='.repeat(60));
-    console.log('✅ Form ready - OFFICIAL DOCUMENTATION FORMULA');
+    console.log('✅ Form ready - PHP CODE FORMULA (NO "0")');
     console.log('='.repeat(60) + '\n');
 
     return { actionUrl, formFields };
@@ -253,7 +251,6 @@ export async function verifyCallbackHash(postBody) {
             return foundKey ? postBody[foundKey] : null;
         };
 
-        // Kritik alanları kontrol et
         const mdStatus = getParam('mdstatus');
         const procReturnCode = getParam('procreturncode');
         const response = getParam('response');
@@ -279,22 +276,20 @@ export async function verifyCallbackHash(postBody) {
         let digestData = '';
         
         console.log('\n[Hash Verification]');
-        console.log('Hash Params Order:', hashParams);
         
         for (const param of paramList) {
             if (!param) continue;
             const val = getParam(param);
             if (val !== null && val !== undefined) {
-                console.log(`  ${param}: ${val}`);
                 digestData += val;
             }
         }
         
         digestData += storeKey;
-        console.log(`  storekey: ***${storeKey.length} chars***`);
+        console.log(`  StoreKey added: ***${storeKey.length} chars***`);
 
         const calculatedHash = crypto.createHash('sha512')
-            .update(digestData, 'latin1')  // ISO-8859-9
+            .update(digestData, 'latin1')
             .digest('hex')
             .toUpperCase();
 
@@ -319,21 +314,15 @@ export function isApproved(postBody) {
 
     const mdStatus = getParam('mdstatus');
     const procReturnCode = getParam('procreturncode');
-    const response = getParam('response');
 
     console.log('\n[Approval Check]');
     console.log('  MD Status:', mdStatus);
     console.log('  Proc Return Code:', procReturnCode);
-    console.log('  Response:', response);
 
-    // MD Status değerleri (döküman kontrolü yapılmadı, 3D için):
-    // 1,2,3,4 = Başarılı
-    // 5,6,7,8,0 = Başarısız
     const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
     const procOk = String(procReturnCode) === '00';
-    const responseOk = String(response).toLowerCase() === 'approved';
 
-    const approved = mdOk && procOk && responseOk;
+    const approved = mdOk && procOk;
     
     console.log('  Result:', approved ? '✅ APPROVED' : '❌ REJECTED');
 
