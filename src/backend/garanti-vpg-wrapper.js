@@ -165,8 +165,8 @@ export async function buildPayHostingForm({
         secure3dsecuritylevel: '3D_OOS_FULL', // Ortak Ödeme Sayfası
         
         // Kullanıcı bilgileri
-        terminalprovuserid: 'PROVAUT',
-        terminaluserid: 'PROVAUT',
+        terminalprovuserid: 'PROVOOS',
+        terminaluserid: 'PROVOOS',
         terminalmerchantid: clean(storeNo),
         terminalid: terminalId, // 8 veya 9 haneli, olduğu gibi
         
