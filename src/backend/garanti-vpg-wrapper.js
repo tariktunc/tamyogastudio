@@ -80,7 +80,7 @@ export async function buildPayHostingForm({ orderId, amountMinor, currency = '94
         terminaluserid: 'PROVAUT',
         terminalmerchantid: storeNo,
         terminalid: terminalIdRaw,
-        orderid,
+        orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
         txnamount: amount,
