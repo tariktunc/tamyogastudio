@@ -7,10 +7,10 @@ import {
   isApproved as isGarantiApproved
 } from 'backend/garanti-vpg-wrapper';
 
-// Sabit callback base (Akbank ile aynı mantık)
+// Callback Base URL
 const GARANTI_CALLBACK_BASE = 'https://www.tamyogastudio.com';
 
-// Basit HTML iskeleti
+// HTML Şablonu
 function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
   return `<!doctype html>
 <html lang="tr">
@@ -24,7 +24,7 @@ function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
 </html>`;
 }
 
-// Sadece üst pencereyi yönlendiren HTML
+// Başarı durumunda üst pencereyi yönlendiren HTML
 function redirectOnlyHtmlTop(target) {
   const safe = String(target || '/');
   return `<!doctype html>
@@ -52,7 +52,7 @@ try{
 </html>`;
 }
 
-// Popup pencereleri kapatmaya çalışan HTML
+// Popup kapatan HTML
 function autoCloseHtml({ redirect = '/' } = {}) {
   const safe = String(redirect || '/');
   return `<!doctype html>
@@ -96,11 +96,7 @@ try{
 export async function redirect(request) {
   try {
     const { wixTxn: wixTxnRaw, amountMinor, currency } = request.query || {};
-    console.log('get_garantiRedirect in', {
-      wixTxnRaw,
-      amountMinor,
-      currency
-    });
+    console.log('get_garantiRedirect in', { wixTxnRaw, amountMinor, currency });
 
     if (!wixTxnRaw || !amountMinor || !(Number(amountMinor) > 0)) {
       return badRequest({
@@ -110,87 +106,27 @@ export async function redirect(request) {
     }
 
     const customerIp = request.ip;
-    console.log(`INFO: Musteri IP adresi alindi: ${customerIp}`);
-
     const callbackBase = GARANTI_CALLBACK_BASE;
-    console.log(`INFO: garantiCallbackBase resolved successfully to: ${callbackBase}`);
 
     // Wix return url parametreleri (sadece taksit seçim ekranında hidden input olarak kullanıyoruz)
     const successUrl = request.query.successUrl ? String(request.query.successUrl) : '';
     const errorUrl   = request.query.errorUrl   ? String(request.query.errorUrl)   : '';
-    const cancelUrl  = request.query.cancelUrl  ? String(request.query.cancelUrl)  : '';
-    const pendingUrl = request.query.pendingUrl ? String(request.query.pendingUrl) : '';
 
     const orderId = (Date.now().toString(36) + Math.random().toString(36).slice(2))
       .slice(0, 28)
       .toUpperCase();
 
-    // Bizim callback adreslerimiz (http-functions üzerinden garantiCallback)
-    // Artık successUrl/errorUrl/cancelUrl/pendingUrl bu URL nin içinde bankaya gönderilmiyor
+    // Callback URL'leri
     const okUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
     const failUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
 
     const amount = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
-    const amtNum = Number(amount);
 
-    let allowedInstallments;
-    if (amtNum <= 10000) allowedInstallments = [1];
-    else if (amtNum <= 18000) allowedInstallments = [1, 2, 3];
-    else allowedInstallments = [1, 2, 3, 4, 5, 6];
+    // *** DEĞİŞİKLİK: Taksit Seçimi İptal Edildi ***
+    // Her zaman "1" (Peşin) olarak gönderiyoruz.
+    const installStr = '1'; 
 
-    const rawInstall = request.query.installCount;
-    let installCount = rawInstall ? Number(rawInstall) || 1 : null;
-    if (installCount != null && !allowedInstallments.includes(Number(installCount))) {
-      installCount = 1;
-    }
-
-    // Eğer taksit seçimi gelmediyse, önce taksit seçme ekranını göster
-    if (!installCount) {
-      const escapedWixTxn = String(wixTxnRaw).replace(/"/g, '&quot;');
-      const escapedAmountMinor = String(amountMinor).replace(/"/g, '&quot;');
-      const escapedCurrency = String(currency || '').replace(/"/g, '&quot;');
-
-      const optionsHtml = allowedInstallments
-        .map(n => `<option value="${n}">${n === 1 ? 'Peşin Ödeme' : (n + ' taksit')}</option>`)
-        .join('');
-
-      const submitBtnLabel = allowedInstallments.length === 1 ? 'ONAYLA' : 'Ödemeye Geç';
-
-      const selectionHtml = `
-      <div class="card" id="akb-card-selection" role="main" aria-label="Taksit Seçim">
-        <h1 id="akb-title-selection">Ödeme Bilgileri (Garanti)</h1>
-        <div class="row" id="akb-row-amount"><div class="label">Tutar:</div><div class="amount" id="akb-amount">${amount} TL</div></div>
-        <form id="akb-form-select" method="GET" action="/_functions/garantiRedirect" target="_self" aria-label="Taksit seçim formu">
-          <input type="hidden" name="wixTxn" value="${escapedWixTxn}">
-          <input type="hidden" name="amountMinor" value="${escapedAmountMinor}">
-          <input type="hidden" name="currency" value="${escapedCurrency}">
-          ${successUrl ? `<input type="hidden" name="successUrl" value="${String(successUrl).replace(/"/g,'&quot;')}">` : ''}
-          ${errorUrl   ? `<input type="hidden" name="errorUrl"   value="${String(errorUrl).replace(/"/g,'&quot;')}">` : ''}
-          ${cancelUrl  ? `<input type="hidden" name="cancelUrl"  value="${String(cancelUrl).replace(/"/g,'&quot;')}">` : ''}
-          ${pendingUrl ? `<input type="hidden" name="pendingUrl" value="${String(pendingUrl).replace(/"/g,'&quot;')}">` : ''}
-
-          <div class="row" id="akb-row-install">
-            <label class="label" for="akb-install">Taksit Seçimi</label>
-            <select id="akb-install" name="installCount" class="select" aria-label="Taksit seçimi">
-              ${optionsHtml}
-            </select>
-          </div>
-          <div class="actions" id="akb-actions-select">
-            <button type="submit" class="btn btn-primary" id="akb-select-submit" aria-label="${submitBtnLabel}">${submitBtnLabel}</button>
-            <a href="/" class="btn" id="akb-select-cancel" target="_self" rel="noopener" aria-label="İptal">İptal</a>
-          </div>
-        </form>
-      </div>`;
-
-      return ok({
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        body: htmlPage({ title: 'Ödeme - Taksit Seçimi (Garanti)', bodyInner: selectionHtml })
-      });
-    }
-
-    // Taksit seçilmiş ise Garanti formunu üret
-    const installStr = installCount > 1 ? String(installCount) : '';
-
+    // Garanti formunu üret (Wrapper'daki yeni OOS yapısını kullanır)
     const { actionUrl, formFields } = await buildGarantiForm({
       orderId,
       amountMinor,
@@ -205,29 +141,29 @@ export async function redirect(request) {
       .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v ?? '').replace(/"/g, '&quot;')}">`)
       .join('\n');
 
-    const monthly = (Number(amount) / Number(installCount)).toFixed(2);
-
+    // Doğrudan Ödeme Onay Ekranı (Taksit seçimi yok)
     const confirmHtml = `
-      <div class="card" id="akb-card-confirm" role="main" aria-label="Taksit Onay">
-        <h1 id="akb-title-confirm">Taksit Onayı (Garanti)</h1>
+      <div class="card" id="akb-card-confirm" role="main" aria-label="Ödeme Onay">
+        <h1 id="akb-title-confirm">Ödeme Onayı (Garanti BBVA)</h1>
         <div class="row" id="akb-row-amount-confirm"><div class="label">Tutar:</div><div class="amount" id="akb-amount-confirm">${amount} TL</div></div>
-        <div class="row" id="akb-row-install-confirm"><div class="label">Seçilen Taksit:</div><div id="akb-install-chosen">${installCount} ${installCount > 1 ? 'taksit' : 'Peşin'}</div></div>
-        <div class="row" id="akb-row-monthly"><div class="label">Her taksit tutarı:</div><div id="akb-monthly">${monthly} TL</div></div>
-        <p class="note" id="akb-note">Onay sonrası Garanti BBVA ekranına yönlendirileceksiniz.</p>
-        <div class="actions" id="akb-actions-confirm">
-          <a href="/" class="btn" id="akb-confirm-cancel" target="_self" rel="noopener" aria-label="İptal">İptal</a>
-          <button id="akb-submit" type="submit" form="akb-form" class="btn btn-primary" aria-label="Onayla ve Bankaya Git">Onayla ve Bankaya Git</button>
-        </div>
+        <div class="row" id="akb-row-install-confirm"><div class="label">Ödeme Tipi:</div><div id="akb-install-chosen">Peşin Ödeme</div></div>
+        <p class="note" id="akb-note">Aşağıdaki butona tıkladığınızda Garanti BBVA güvenli ödeme sayfasına yönlendirileceksiniz.</p>
+        
+        <form id="akb-form" method="POST" action="${actionUrl}" target="_self" aria-label="Bankaya yönlendirme formu">
+          ${inputs}
+          <div class="actions" id="akb-actions-confirm">
+            <a href="/" class="btn" id="akb-confirm-cancel" target="_self" rel="noopener" aria-label="İptal">İptal</a>
+            <button id="akb-submit" type="submit" class="btn btn-primary" aria-label="Ödemeye Geç">Ödemeye Geç</button>
+          </div>
+        </form>
       </div>
-      <form id="akb-form" method="POST" action="${actionUrl}" target="_self" aria-label="Bankaya yönlendirme formu">
-        ${inputs}
-      </form>
       <script>
       (function(){
         var f=document.getElementById('akb-form');
         var btn=document.getElementById('akb-submit');
         var sent=false;
         if(!f||!btn)return;
+        
         f.addEventListener('submit',function(e){
           if(sent){e.preventDefault();return;}
           sent=true;
@@ -236,22 +172,13 @@ export async function redirect(request) {
             btn.textContent='Yönlendiriliyor…';
           }catch(e){}
         },false);
-        btn.addEventListener('click',function(){
-          try{ f.requestSubmit ? f.requestSubmit() : f.submit(); }catch(e){}
-        });
-        var cancelLinks=document.querySelectorAll('a[aria-label="İptal"]');
-        cancelLinks.forEach(function(a){
-          a.addEventListener('click', function(){ sent=true; });
-        });
       })();
       </script>
     `;
 
-    console.info('get_garantiRedirect: Bankaya Gonderilen Form Verisi', formFields);
-
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      body: htmlPage({ title: 'Taksit Onayı (Garanti)', bodyInner: confirmHtml })
+      body: htmlPage({ title: 'Ödeme Onayı (Garanti)', bodyInner: confirmHtml })
     });
   } catch (e) {
     console.error('Garanti redirect ERROR:', e);
@@ -263,7 +190,7 @@ export async function redirect(request) {
 }
 
 // =====================================================================
-// CALLBACK - Garanti 3D dönüşü
+// CALLBACK - Garanti dönüşü
 // =====================================================================
 export async function callback(request) {
   try {
@@ -281,7 +208,7 @@ export async function callback(request) {
       normalizedPost[key.toLowerCase()] = post[key];
     });
 
-    console.log('post_garantiCallback (Normalized) received:', normalizedPost);
+    console.log('post_garantiCallback received:', normalizedPost);
 
     const wixTransactionId =
       (request.query && request.query.wixTransactionId) ||
@@ -299,11 +226,10 @@ export async function callback(request) {
     try {
       hashOk = await verifyGarantiHash(normalizedPost);
     } catch (e) {
-      console.error('post_garantiCallback verifyGarantiHash critical error:', e);
+      console.error('post_garantiCallback verifyGarantiHash error:', e);
       hashOk = false;
     }
 
-    console.log(`Hash Verification Result: ${hashOk}. (Order ID: ${orderId})`);
     if (!hashOk) console.warn('GARANTI CALLBACK: Hash mismatch or missing params.');
 
     const approved = isGarantiApproved(normalizedPost);
@@ -355,10 +281,7 @@ export async function callback(request) {
       });
     }
 
-    const reason =
-      `Hata Kodu: ${hostCode} / MD: ${mdStatus}. ${bankErrorMsg}` +
-      (hashOk ? '' : ' (Hash Hatası!)');
-
+    const reason = `Hata Kodu: ${hostCode} / MD: ${mdStatus}. ${bankErrorMsg}` + (hashOk ? '' : ' (Hash Hatası!)');
     console.warn(`Failed Transaction (oid: ${orderId}). Reason: ${reason}`);
 
     const fallbackErr = `/odeme/basarisiz?host=${encodeURIComponent(
