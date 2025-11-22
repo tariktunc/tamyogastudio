@@ -7,11 +7,10 @@ function clean(val) {
 
 /**
  * [ADIM 1] Şifre Hashleme (SHA1)
- * KRİTİK: Banka arka planda şifreyi doğrularken Terminal ID'nin 
- * başına 0 eklenmiş (9 haneli) halini kullanır.
+ * Terminal ID'nin bankadan geldiği formatta (genelde 9 hane) kullanılır.
  */
 function createHashedPassword(password, terminalId) {
-    // Terminal ID'yi 9 haneye tamamla (Örn: 30691297 -> 030691297)
+    // Terminal ID'yi 9 haneye tamamla (örn: 30691297 -> 030691297)
     const paddedId = terminalId.padStart(9, '0'); 
     const rawData = password + paddedId;
     
@@ -25,12 +24,11 @@ function createHashedPassword(password, terminalId) {
 
 /**
  * [ADIM 2] Güvenlik Hash'i (SHA512)
- * KRİTİK: Buradaki Terminal ID, formda gönderilen (8 haneli) ile AYNI olmalıdır.
- * Yoksa "Hash Hatası" alırsınız.
+ * KRITIK: Terminal ID formdaki ile AYNI olmalı (genelde 9 hane).
  */
 function createSecure3DHash(data) {
     const plainText = 
-        data.terminalId + // Formdaki ID (8 hane)
+        data.terminalId + 
         data.orderId + 
         data.amount + 
         data.currency + 
@@ -39,7 +37,7 @@ function createSecure3DHash(data) {
         data.txnType + 
         data.installment + 
         data.storeKey + 
-        data.hashedPassword; // 9 haneli ID ile üretilmiş şifre hash'i
+        data.hashedPassword;
 
     console.log('[Garanti-Wrapper] Main Hash Input:', plainText);
 
@@ -72,28 +70,27 @@ export async function buildPayHostingForm({
         throw new Error('Garanti Secrets eksik!');
     }
 
-    // 2. Veri Hazırlığı
-    // Terminal ID'yi Secrets'tan geldiği gibi (varsa başındaki 0'ları temizleyerek) alıyoruz.
-    // Örn: "30691297" (8 hane) -> Form'da bu gidecek.
-    const terminalIdRaw = clean(rawTerminalId).replace(/^0+/, '');
+    // 2. Terminal ID'yi olduğu gibi kullan (leading zero'ları KORUYARAK)
+    const terminalId = clean(rawTerminalId);
+    
+    // Terminal ID 9 haneye tamamlanmalı (bankadan genelde 8-9 hane gelir)
+    const terminalIdPadded = terminalId.padStart(9, '0');
     
     const storeKey = clean(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
-    const amount = String(amountMinor); // Kuruş cinsinden (100 = 1.00 TL)
+    const amount = String(amountMinor);
 
-    // Taksit: Test ortamı boş taksiti sevmez, peşin için "1" gönderiyoruz.
     let installmentStr = String(installments || '1');
     if (installmentStr === '0' || installmentStr === '') installmentStr = '1';
 
     const type = txnType || 'sales';
 
     // 3. Hash Hesaplama
-    // A. Şifre Hash: Padded ID (030691297) kullanır.
-    const hashedPassword = createHashedPassword(clean(password), terminalIdRaw);
-
-    // B. Ana Hash: Raw ID (30691297) kullanır.
+    // Her iki hash için de AYNI Terminal ID kullanılmalı
+    const hashedPassword = createHashedPassword(clean(password), terminalIdPadded);
+    
     const securityHash = createSecure3DHash({
-        terminalId: terminalIdRaw, // 8 Hane
+        terminalId: terminalIdPadded, // 9 hane, padding ile
         orderId: orderId,
         amount: amount,
         currency: currencyCode,
@@ -105,19 +102,22 @@ export async function buildPayHostingForm({
         hashedPassword: hashedPassword
     });
 
+    console.log('[Garanti-Wrapper] Using Terminal ID:', terminalIdPadded);
+    console.log('[Garanti-Wrapper] Order ID:', orderId);
+    console.log('[Garanti-Wrapper] Amount (kuruş):', amount);
+
     // 4. Banka URL (Test)
     const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
 
     // 5. Form Alanları
-    // "OOS_PAY" -> Ortak Ödeme Sayfası (Kart bilgisi istemez, bankaya yönlendirir)
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY', // <--- İŞTE SİHİRLİ KELİME BU
+        secure3dsecuritylevel: 'OOS_PAY',
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
-        terminalid: terminalIdRaw, // Formda 8 Hane Gider (Input hatasını önler)
+        terminalid: terminalIdPadded, // 9 haneli ID gönder
         orderid: orderId,
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
@@ -153,11 +153,14 @@ export async function verifyCallbackHash(postBody) {
         const hashParams = getParam('hashparams');
 
         if (!responseHash || !hashParams) {
+            console.error('[Garanti-Wrapper] Hash verification failed: Missing hash or hashparams');
             return false;
         }
 
         const paramList = String(hashParams).split(':');
         let digestData = '';
+        
+        console.log('[Garanti-Wrapper] Hash params order:', hashParams);
         
         for (const param of paramList) {
             if (!param) continue;
@@ -174,10 +177,20 @@ export async function verifyCallbackHash(postBody) {
             .digest('hex')
             .toUpperCase();
 
-        return (responseHash.toUpperCase() === calculatedHash);
+        const isValid = (responseHash.toUpperCase() === calculatedHash);
+        
+        if (!isValid) {
+            console.error('[Garanti-Wrapper] Hash mismatch!');
+            console.error('Expected:', calculatedHash);
+            console.error('Received:', responseHash.toUpperCase());
+        } else {
+            console.log('[Garanti-Wrapper] Hash verification successful');
+        }
+
+        return isValid;
 
     } catch (e) {
-        console.error('Verify Error:', e);
+        console.error('[Garanti-Wrapper] Verify Error:', e);
         return false;
     }
 }
@@ -192,7 +205,9 @@ export function isApproved(postBody) {
     const procReturnCode = getParam('procreturncode');
     const response = getParam('response');
 
-    // OOS modelinde MDStatus dönüşü başarılı işlemler için genelde 1'dir.
+    console.log('[Garanti-Wrapper] Approval check - MDStatus:', mdStatus, 'ProcReturnCode:', procReturnCode);
+
+    // OOS modelinde MDStatus başarılı işlemler için genelde 1'dir
     const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
     const procOk = String(procReturnCode) === '00' || String(response).toLowerCase() === 'approved';
 
