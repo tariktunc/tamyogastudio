@@ -116,11 +116,12 @@ export async function buildPayHostingForm({
     const amount = String(amountMinor); // Kuruş cinsinden (örn: 10000 = 100.00 TL)
 
     // TAKSİT AYARI - KRİTİK!
-    // Garanti test ortamı için: Boş string yerine boş bırak veya "1" kullan
+    // Garanti bazı durumlarda boş installment kabul etmiyor
+    // Peşin ödeme için "1" veya "" gönder
     let installmentStr = String(installments || '').trim();
-    // Eğer taksit yoksa veya "0" ise -> boş string gönder
-    if (installmentStr === '0') {
-        installmentStr = '';
+    // Boş ise "1" ata (peşin ödeme)
+    if (installmentStr === '0' || installmentStr === '') {
+        installmentStr = '1';
     }
 
     const type = txnType || 'sales';
@@ -163,7 +164,7 @@ export async function buildPayHostingForm({
         apiversion: '512',
         secure3dsecuritylevel: 'OOS_PAY', // Ortak Ödeme Sayfası
         
-        // Kullanıcı bilgileri - Test dökümanına göre PROVAUT kullan
+        // Kullanıcı bilgileri
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
