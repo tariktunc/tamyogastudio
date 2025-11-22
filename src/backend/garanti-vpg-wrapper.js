@@ -189,7 +189,7 @@ export async function buildPayHostingForm({
     const formFields = {
         // Sistem alanları
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY',  // 3D'siz için OOS_PAY
+        secure3dsecuritylevel: '3D_OOS_FULL',  // 3D'li güvenli ödeme
         
         // Terminal bilgileri - 9 HANELİ
         terminalid: formTerminalId,  // 9 haneli: 010380183
