@@ -121,7 +121,7 @@ export async function buildPayHostingForm({
             orderid: 'TESTORDER12345',
             customeripaddress: '127.0.0.1',
             customeremailaddress: 'test@example.com',
-            txnamount: '100',
+            txnamount: amount,
             txncurrencycode: '949',
             txntype: 'sales',
             txninstallmentcount: '',
