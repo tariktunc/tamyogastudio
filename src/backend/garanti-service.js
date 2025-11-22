@@ -7,7 +7,8 @@ import {
   isApproved as isGarantiApproved
 } from 'backend/garanti-vpg-wrapper';
 
-const GARANTI_CALLBACK_BASE = 'https://www.tamyogastudio.com';
+// Callback base URL'i ortama göre ayarlayın
+const GARANTI_CALLBACK_BASE = process.env.GARANTI_CALLBACK_BASE || 'https://www.tamyogastudio.com';
 
 function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
   return `<!doctype html>
@@ -17,6 +18,16 @@ function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${String(title)}</title>
 <link rel="stylesheet" href="/_functions/paycss">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .card { border-radius: 8px; padding: 2rem; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .note { color: #666; font-size: 0.95rem; margin: 1rem 0; }
+  .actions { margin-top: 2rem; display: flex; gap: 1rem; }
+  .btn { padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn { background: #f0f0f0; color: #333; }
+  .btn-primary { background: #0066cc; color: white; }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+</style>
 </head>
 <body id="akb-body"><div class="wrap" id="akb-wrap">${bodyInner}</div></body>
 </html>`;
@@ -29,20 +40,12 @@ function redirectOnlyHtmlTop(target) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yönlendiriliyor...</title>
-<link rel="stylesheet" href="/_functions/paycss">
+<title>Yönlendiriliyorr...</title>
 </head>
-<body id="akb-body"><div class="wrap" id="akb-wrap">
-  <div class="card" id="akb-card-alert" role="alert" aria-live="polite">
-    <h2 id="akb-close-title">Yönlendiriliyor...</h2>
-  </div>
-</div>
+<body>
 <script>
-try{
-  window.top.location.replace(${JSON.stringify(safe)});
-}catch(e){
-  location.href=${JSON.stringify(safe)};
-}
+try{ window.top.location.replace(${JSON.stringify(safe)}); }
+catch(e){ location.href=${JSON.stringify(safe)}; }
 </script>
 <noscript><meta http-equiv="refresh" content="0;url=${safe}"></noscript>
 </body>
@@ -56,30 +59,22 @@ function autoCloseHtml({ redirect = '/' } = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PENCEREYİ KAPATIN</title>
-<link rel="stylesheet" href="/_functions/paycss">
+<title>Pencereyi Kapatın</title>
 </head>
-<body id="akb-body"><div class="wrap" id="akb-wrap">
-  <div class="card" id="akb-card-alert" role="alert" aria-live="polite">
-    <h2 id="akb-close-title">PENCEREYİ KAPATIN</h2>
-  </div>
-</div>
+<body>
+<p>Ödeme işlemi tamamlanmıştır. Pencereyi kapatabilirsiniz...</p>
 <script>
 try{
-  try {
-    if (window.opener && !window.opener.closed) {
-      window.opener.postMessage({type:'GARANTI_PAYMENT_DONE'}, '*');
-    }
-  } catch(e){}
-  try {
-    if (window.opener && !window.opener.closed) {
-      window.opener.location.reload();
-    }
-  } catch(e){}
-  setTimeout(function(){
-    try{ window.close(); }catch(e){}
-  }, 800);
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({type:'GARANTI_PAYMENT_DONE'}, '*');
+  }
 }catch(e){}
+try{
+  if (window.opener && !window.opener.closed) {
+    window.opener.location.reload();
+  }
+}catch(e){}
+setTimeout(function(){ try{ window.close(); }catch(e){} }, 1000);
 </script>
 <noscript><meta http-equiv="refresh" content="0;url=${safe}"></noscript>
 </body>
@@ -92,137 +87,161 @@ try{
 export async function redirect(request) {
   try {
     const { wixTxn: wixTxnRaw, amountMinor, currency } = request.query || {};
-    console.log('\n========== GARANTI REDIRECT REQUEST ==========');
+    
+    console.log('\n' + '='.repeat(70));
+    console.log('GARANTI REDIRECT REQUEST');
+    console.log('='.repeat(70));
     console.log('Wix Transaction ID:', wixTxnRaw);
-    console.log('Amount (minor):', amountMinor);
+    console.log('Amount (kuruş):', amountMinor);
     console.log('Currency:', currency);
     console.log('Customer IP:', request.ip);
 
+    // Parametreleri valide et
     if (!wixTxnRaw || !amountMinor || !(Number(amountMinor) > 0)) {
-      console.error('❌ Invalid parameters');
+      console.error('❌ Hatalı parametreler');
       return badRequest({
-        headers: { 'Content-Type': 'text/plain' },
-        body: 'missing or invalid params'
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: 'Eksik veya hatalı parametreler'
       });
     }
 
     const customerIp = request.ip;
     const callbackBase = GARANTI_CALLBACK_BASE;
 
-    const successUrl = request.query.successUrl ? String(request.query.successUrl) : '';
-    const errorUrl   = request.query.errorUrl   ? String(request.query.errorUrl)   : '';
-
+    // Order ID oluştur (rastgele, max 28 karakter)
     const orderId = (Date.now().toString(36) + Math.random().toString(36).slice(2))
       .slice(0, 28)
       .toUpperCase();
 
-    const okUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
-    const failUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
+    // Callback URL'leri oluştur
+    const okUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}&type=success`;
+    const failUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}&type=fail`;
 
     console.log('Generated Order ID:', orderId);
-    console.log('Callback URLs:');
-    console.log('  Success:', okUrl);
-    console.log('  Fail:', failUrl);
+    console.log('Success URL:', okUrl);
+    console.log('Fail URL:', failUrl);
 
-    const amount = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
-    const installStr = ''; // Peşin için BOŞ
+    // Tutar TL'ye dönüştür (gösterim için)
+    const amountTL = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
 
-    console.log('Payment Details:');
-    console.log('  Amount (TL):', amount);
-    console.log('  Installment:', installStr || '(cash payment)');
+    console.log('Tutar (TL):', amountTL);
+    console.log('='.repeat(70));
 
     // Garanti formunu üret
     const { actionUrl, formFields } = await buildGarantiForm({
       orderId,
-      amountMinor,
+      amountMinor: String(amountMinor),
       currency,
       okUrl,
       failUrl,
       customerIp,
-      installments: installStr
+      installments: '1' // Peşin ödeme
     });
 
+    // Form input'larını HTML'e dönüştür
     const inputs = Object.entries(formFields)
       .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v ?? '').replace(/"/g, '&quot;')}">`)
       .join('\n');
 
+    // Onay sayfası HTML'i
     const confirmHtml = `
-      <div class="card" id="akb-card-confirm" role="main" aria-label="Ödeme Onay">
-        <h1 id="akb-title-confirm">Ödeme Onayı (Garanti BBVA)</h1>
-        <div class="row" id="akb-row-amount-confirm"><div class="label">Tutar:</div><div class="amount" id="akb-amount-confirm">${amount} TL</div></div>
-        <div class="row" id="akb-row-install-confirm"><div class="label">Ödeme Tipi:</div><div id="akb-install-chosen">Peşin Ödeme</div></div>
-        <p class="note" id="akb-note">Aşağıdaki butona tıkladığınızda Garanti BBVA güvenli ödeme sayfasına yönlendirileceksiniz.</p>
+      <div class="card" id="akb-card-confirm" role="main">
+        <h1>Ödeme Onayı (Garanti BBVA)</h1>
+        <div style="margin: 2rem 0;">
+          <div style="padding: 1rem; background: #f5f5f5; border-radius: 4px;">
+            <div style="display: flex; justify-content: space-between; margin: 0.5rem 0;">
+              <span>Tutar:</span>
+              <strong style="font-size: 1.2em;">${amountTL} TL</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin: 0.5rem 0;">
+              <span>Ödeme Tipi:</span>
+              <span>Peşin Ödeme</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin: 0.5rem 0;">
+              <span>Sipariş No:</span>
+              <span style="font-family: monospace; font-size: 0.9em;">${orderId}</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="note">
+          Aşağıdaki butona tıkladığınızda Garanti BBVA güvenli ödeme sayfasına yönlendirileceksiniz. 
+          Orada 3D Secure ile güvenli bir şekilde ödemenizi yapabilirsiniz.
+        </p>
         
-        <form id="akb-form" method="POST" action="${actionUrl}" target="_self" aria-label="Bankaya yönlendirme formu">
+        <form id="akb-form" method="POST" action="${actionUrl}" target="_self">
           ${inputs}
-          <div class="actions" id="akb-actions-confirm">
-            <a href="/" class="btn" id="akb-confirm-cancel" target="_self" rel="noopener" aria-label="İptal">İptal</a>
-            <button id="akb-submit" type="submit" class="btn btn-primary" aria-label="Ödemeye Geç">Ödemeye Geç</button>
+          <div class="actions">
+            <a href="/" class="btn">İptal</a>
+            <button type="submit" class="btn btn-primary" id="akb-submit">Ödemeye Geç</button>
           </div>
         </form>
       </div>
+
       <script>
       (function(){
-        var f=document.getElementById('akb-form');
-        var btn=document.getElementById('akb-submit');
-        var sent=false;
-        if(!f||!btn)return;
+        var f = document.getElementById('akb-form');
+        var btn = document.getElementById('akb-submit');
+        if(!f || !btn) return;
         
-        f.addEventListener('submit',function(e){
-          if(sent){e.preventDefault();return;}
-          sent=true;
-          try{
-            btn.setAttribute('disabled','disabled');
-            btn.textContent='Yönlendiriliyor…';
-          }catch(e){}
-        },false);
+        var sent = false;
+        f.addEventListener('submit', function(e){
+          if(sent) { e.preventDefault(); return; }
+          sent = true;
+          btn.disabled = true;
+          btn.textContent = 'Yönlendiriliyorr...';
+        }, false);
       })();
       </script>
     `;
 
-    console.log('✅ Redirect page generated successfully');
-    console.log('===========================================\n');
+    console.log('✅ Onay sayfası oluşturuldu\n');
 
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
       body: htmlPage({ title: 'Ödeme Onayı (Garanti)', bodyInner: confirmHtml })
     });
+
   } catch (e) {
-    console.error('❌ Garanti redirect ERROR:', e);
+    console.error('❌ Redirect Hatası:', e);
     return badRequest({
-      headers: { 'Content-Type': 'text/plain' },
-      body: String(e && e.message ? e.message : e)
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body: 'Hata: ' + (e?.message || String(e))
     });
   }
 }
 
 // =====================================================================
-// CALLBACK - Garanti dönüşü
+// CALLBACK - Garanti'den geri dönüş
 // =====================================================================
 export async function callback(request) {
   try {
-    console.log('\n========== GARANTI CALLBACK HANDLER ==========');
-    console.log('Request Method:', request.method);
-    console.log('Query Params:', request.query);
-    
+    console.log('\n' + '='.repeat(70));
+    console.log('GARANTI CALLBACK HANDLER');
+    console.log('='.repeat(70));
+    console.log('Method:', request.method);
+    console.log('Query Params:', JSON.stringify(request.query));
+
+    // POST verisini parse et
     let post = {};
     try {
       const raw = await request.body.text();
-      console.log('Raw POST Body:', raw);
+      console.log('POST Body alındı, parsing...');
       post = Object.fromEntries(new URLSearchParams(raw || ''));
     } catch (e) {
-      console.error('❌ Callback Parse Error:', e);
+      console.error('⚠️ POST Parse Hatası:', e);
       post = {};
     }
 
+    // Büyük/küçük harf sensitivitesini kaldır
     const normalizedPost = {};
     Object.keys(post).forEach(key => {
       normalizedPost[key.toLowerCase()] = post[key];
     });
 
-    console.log('Normalized POST keys:', Object.keys(normalizedPost));
-    console.log('Full normalized POST:', JSON.stringify(normalizedPost, null, 2));
+    console.log('\nDönen POST Alanları:', Object.keys(normalizedPost).sort().join(', '));
 
+    // Wix Transaction ID'yi al
     const wixTransactionId =
       (request.query && request.query.wixTransactionId) ||
       normalizedPost.oid ||
@@ -232,46 +251,39 @@ export async function callback(request) {
     const orderId = normalizedPost.oid || normalizedPost.orderid || '';
     const amount = normalizedPost.txnamount || normalizedPost.amount || '';
 
-    console.log('Transaction Details:');
+    console.log('\nİşlem Bilgileri:');
     console.log('  Wix Transaction ID:', wixTransactionId);
     console.log('  Order ID:', orderId);
     console.log('  Amount:', amount);
 
-    const successUrl = request.query && request.query.successUrl ? String(request.query.successUrl) : '';
-    const errorUrl   = request.query && request.query.errorUrl   ? String(request.query.errorUrl)   : '';
-
+    // Hash doğrulaması yap
     let hashOk = false;
     try {
       hashOk = await verifyGarantiHash(normalizedPost);
-      console.log('Hash Verification Result:', hashOk ? '✅ VALID' : '❌ INVALID');
     } catch (e) {
-      console.error('❌ Hash verification error:', e);
+      console.error('⚠️ Hash doğrulama hatası:', e);
       hashOk = false;
     }
 
-    if (!hashOk) {
-      console.warn('⚠️ GARANTI CALLBACK: Hash mismatch or missing params.');
-      console.warn('This is NORMAL if MDStatus=7 (bank rejected the initial request)');
-    }
-
+    // İşlem onayını kontrol et
     const approved = isGarantiApproved(normalizedPost);
-    const hostCode = String(normalizedPost.procreturncode || '');
     const mdStatus = String(normalizedPost.mdstatus || '');
-    const bankErrorMsg =
-      String(
-        normalizedPost.mderrormessage ||
-        normalizedPost.errmsg ||
-        'İşlem banka tarafından reddedildi.'
-      );
+    const procReturnCode = String(normalizedPost.procreturncode || '');
+    const errorMsg = String(
+      normalizedPost.mderrormessage ||
+      normalizedPost.errmsg ||
+      'İşlem banka tarafından reddedildi.'
+    );
 
-    console.log('Final Status:');
-    console.log('  Approved:', approved);
-    console.log('  Host Code:', hostCode);
+    console.log('\n[Sonuç]');
+    console.log('  Hash Doğru:', hashOk ? '✅' : '❌');
     console.log('  MD Status:', mdStatus);
-    console.log('  Error Message:', bankErrorMsg);
+    console.log('  Proc Return Code:', procReturnCode);
+    console.log('  Hata Mesajı:', errorMsg);
 
+    // Başarılı işlem
     if (approved && hashOk) {
-      console.log('✅ Payment SUCCESSFUL - Submitting to Wix');
+      console.log('\n✅ İŞLEM BAŞARILI - Wix\'e bildiriliyorr...');
       
       try {
         if (wixTransactionId) {
@@ -279,77 +291,56 @@ export async function callback(request) {
             event: {
               transaction: {
                 wixTransactionId,
-                pluginTransactionId:
-                  normalizedPost.authcode ||
-                  normalizedPost.retref ||
-                  'GARANTI_OOS'
+                pluginTransactionId: normalizedPost.authcode || normalizedPost.retref || 'GARANTI_OOS'
               }
             }
           });
-          console.log('✅ Wix event submitted successfully');
+          console.log('✅ Wix event gönderildi');
         }
       } catch (e) {
-        console.warn('⚠️ submitEvent error (ignored):', e);
+        console.warn('⚠️ Wix event hatası (göz ardı):', e);
       }
 
-      const target =
-        successUrl ||
-        `/odeme/basarili?wixTxn=${encodeURIComponent(wixTransactionId)}&orderId=${encodeURIComponent(
-          orderId
-        )}&amount=${encodeURIComponent(amount)}`;
+      const target = `/odeme/basarili?wixTxn=${encodeURIComponent(wixTransactionId)}&orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount)}`;
+      console.log('Yönlendirme:', target);
+      console.log('='.repeat(70) + '\n');
 
-      console.log('Redirecting to:', target);
-      console.log('===========================================\n');
-
-      if (successUrl) {
-        return ok({
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-          body: redirectOnlyHtmlTop(target)
-        });
-      }
       return ok({
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
         body: autoCloseHtml({ redirect: target })
       });
     }
 
-    const reason = `Hata Kodu: ${hostCode} / MD: ${mdStatus}. ${bankErrorMsg}` + (hashOk ? '' : ' (Hash Hatası!)');
-    console.error('❌ Payment FAILED:', reason);
+    // Başarısız işlem
+    console.error('\n❌ İŞLEM BAŞARIŞIZ');
+    const reason = `Hata: ${procReturnCode} / MD: ${mdStatus} - ${errorMsg}`;
+    const target = `/odeme/basarisiz?host=${encodeURIComponent(procReturnCode)}&msg=${encodeURIComponent(reason)}&orderId=${encodeURIComponent(orderId)}`;
 
-    const fallbackErr = `/odeme/basarisiz?host=${encodeURIComponent(
-      hostCode
-    )}&msg=${encodeURIComponent(reason)}&orderId=${encodeURIComponent(orderId)}`;
-    const target = errorUrl || fallbackErr;
+    console.log('Yönlendirme:', target);
+    console.log('='.repeat(70) + '\n');
 
-    console.log('Redirecting to error page:', target);
-    console.log('===========================================\n');
-
-    if (errorUrl) {
-      const errHtml = `
-      <div class="card" id="akb-card-alert" role="alert" aria-live="assertive">
-        <h1 id="akb-title-alert">Ödeme Başarısız</h1>
-        <p class="note">Banka Yanıtı: ${bankErrorMsg}</p>
-        <p class="note" style="font-size:0.8em; color:#666;">Kod: ${hostCode} | MD: ${mdStatus}</p>
-        <div class="actions" id="akb-actions-alert">
-          <a class="btn" href="${target}" id="akb-alert-home">Devam Et</a>
+    const errHtml = `
+      <div class="card" id="akb-card-alert" role="alert">
+        <h1>Ödeme Başarısız</h1>
+        <p class="note">Banka Yanıtı: <strong>${errorMsg}</strong></p>
+        <p class="note" style="font-size: 0.85em; color: #999;">
+          Kod: ${procReturnCode} | MD: ${mdStatus}
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href="${target}">Devam Et</a>
         </div>
       </div>`;
-      return ok({
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        body: htmlPage({ title: 'Ödeme Başarısız', bodyInner: errHtml })
-      });
-    }
 
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      body: autoCloseHtml({ redirect: target })
+      body: htmlPage({ title: 'Ödeme Başarısız', bodyInner: errHtml })
     });
+
   } catch (err) {
-    console.error('❌ Callback FATAL ERROR:', err);
-    const target = '/';
+    console.error('❌ CALLBACK FATAL ERROR:', err);
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      body: autoCloseHtml({ redirect: target })
+      body: autoCloseHtml({ redirect: '/' })
     });
   }
 }
