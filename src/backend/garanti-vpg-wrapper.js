@@ -6,7 +6,7 @@ function clean(val) {
 }
 
 function createHashedPassword(password, terminalId) {
-    const paddedId = terminalId.padStart(9, '0'); 
+    const paddedId = terminalId.padStart(9, '0');
     const rawData = password + paddedId;
 
     return crypto.createHash('sha1')
@@ -34,7 +34,17 @@ function createSecure3DHash(data) {
         .toUpperCase();
 }
 
-export async function buildPayHostingForm({ orderId, amountMinor, currency = '949', okUrl, failUrl, installments = '', txnType = 'sales', customerIp, email = 'test@example.com' }) {
+export async function buildPayHostingForm({
+    orderId,
+    amountMinor,
+    currency = '949',
+    okUrl,
+    failUrl,
+    installments = '1',
+    txnType = 'sales',
+    customerIp = '127.0.0.1',
+    email = 'test@example.com'
+}) {
     const [rawTerminalId, storeNo, password, rawStoreKey] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
@@ -51,10 +61,10 @@ export async function buildPayHostingForm({ orderId, amountMinor, currency = '94
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
     const amount = String(amountMinor);
 
-    let installmentStr = String(installments || '1');
+    let installmentStr = String(installments);
     if (installmentStr === '0' || installmentStr === '') installmentStr = '1';
 
-    const type = txnType || 'sales';
+    const type = txnType;
 
     const hashedPassword = createHashedPassword(clean(password), terminalIdRaw);
     const securityHash = createSecure3DHash({
@@ -81,7 +91,7 @@ export async function buildPayHostingForm({ orderId, amountMinor, currency = '94
         terminalmerchantid: storeNo,
         terminalid: terminalIdRaw,
         orderid: orderId,
-        customeripaddress: customerIp || '127.0.0.1',
+        customeripaddress: customerIp,
         customeremailaddress: email,
         txnamount: amount,
         txncurrencycode: currencyCode,
