@@ -162,7 +162,7 @@ export async function buildPayHostingForm({
         // Sistem alanları
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY', // Ortak Ödeme Sayfası
+        secure3dsecuritylevel: '3D_OOS_FULL', // Ortak Ödeme Sayfası
         
         // Kullanıcı bilgileri
         terminalprovuserid: 'PROVAUT',
