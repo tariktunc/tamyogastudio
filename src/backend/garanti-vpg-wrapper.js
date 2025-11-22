@@ -7,13 +7,15 @@ function clean(val) {
 
 /**
  * [ADIM 1] Şifre Hashleme (SHA1)
- * KRITIK: Terminal ID 9 haneli olmalı (ör: 030691297)
+ * KRITIK: Terminal ID'yi 9 haneye tamamla (ör: 30691297 -> 030691297)
  */
 function createHashedPassword(password, terminalId) {
+    // Garanti, şifre hashinde Terminal ID'yi 9 haneye tamamlanmış halde bekler
     const paddedId = terminalId.padStart(9, '0'); 
     const rawData = password + paddedId;
     
-    console.log('[Hash-Step1] Terminal ID (9-digit):', paddedId);
+    console.log('[Hash-Step1] Terminal ID (raw):', terminalId);
+    console.log('[Hash-Step1] Terminal ID (padded to 9):', paddedId);
     console.log('[Hash-Step1] Password length:', password.length);
 
     const hash = crypto.createHash('sha1')
@@ -27,12 +29,12 @@ function createHashedPassword(password, terminalId) {
 
 /**
  * [ADIM 2] Güvenlik Hash'i (SHA512)
- * KRITIK: Alan sırası ve format çok önemli
+ * KRITIK: Terminal ID formdaki ile aynı olmalı (8 veya 9 hane)
  */
 function createSecure3DHash(data) {
     // Garanti'nin beklediği EXACT sıra:
     const plainText = 
-        data.terminalId +      // 9 haneli
+        data.terminalId +      // Olduğu gibi (8 veya 9 hane)
         data.orderId + 
         data.amount + 
         data.currency + 
@@ -41,7 +43,7 @@ function createSecure3DHash(data) {
         data.txnType + 
         data.installment +     // Boş olabilir ama field olmalı
         data.storeKey + 
-        data.hashedPassword;
+        data.hashedPassword;   // 9 haneli ID ile üretilmiş şifre
 
     console.log('[Hash-Step2] Hash String Components:');
     console.log('  1. TerminalID:', data.terminalId, `(${data.terminalId.length} chars)`);
@@ -104,8 +106,11 @@ export async function buildPayHostingForm({
     console.log('  Password:', `***${password.length} chars***`);
     console.log('  Store Key:', `***${rawStoreKey.length} chars***`);
 
-    // 2. Terminal ID'yi 9 haneye tamamla
-    const terminalId = clean(rawTerminalId).padStart(9, '0');
+    // 2. Terminal ID - Garanti'den geldiği gibi kullan
+    // Eğer 8 haneyse 8 hane, 9 haneyse 9 hane olarak kalsın
+    const terminalIdRaw = clean(rawTerminalId);
+    const terminalId = terminalIdRaw; // Olduğu gibi kullan
+    
     const storeKey = clean(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
     const amount = String(amountMinor); // Kuruş cinsinden (örn: 10000 = 100.00 TL)
@@ -121,7 +126,7 @@ export async function buildPayHostingForm({
     const type = txnType || 'sales';
 
     console.log('\n[Processed Values]');
-    console.log('  Terminal ID (9-digit):', terminalId);
+    console.log('  Terminal ID (as-is):', terminalId, `(${terminalId.length} digits)`);
     console.log('  Store No:', storeNo);
     console.log('  Currency Code:', currencyCode);
     console.log('  Amount (kuruş):', amount);
@@ -129,10 +134,11 @@ export async function buildPayHostingForm({
     console.log('  Type:', type);
 
     // 3. Hash Hesaplama
+    // NOT: Şifre hashinde 9 haneli ID kullanılır, ana hashde ise olduğu gibi
     const hashedPassword = createHashedPassword(clean(password), terminalId);
     
     const securityHash = createSecure3DHash({
-        terminalId: terminalId,      // 9 haneli
+        terminalId: terminalId,      // Olduğu gibi (8 veya 9 hane)
         orderId: orderId,
         amount: amount,
         currency: currencyCode,
@@ -141,7 +147,7 @@ export async function buildPayHostingForm({
         txnType: type,
         installment: installmentStr, // Boş olabilir
         storeKey: storeKey,
-        hashedPassword: hashedPassword
+        hashedPassword: hashedPassword // 9 haneli ID ile üretilmiş
     });
 
     // 4. Banka URL
@@ -159,7 +165,7 @@ export async function buildPayHostingForm({
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
-        terminalid: terminalId, // 9 haneli
+        terminalid: terminalId, // 8 veya 9 haneli, olduğu gibi
         
         // İşlem bilgileri
         txntype: type,
