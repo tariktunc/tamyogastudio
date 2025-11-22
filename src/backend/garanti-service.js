@@ -7,8 +7,8 @@ import {
   isApproved as isGarantiApproved
 } from 'backend/garanti-vpg-wrapper';
 
-// Callback base URL'i ortama göre ayarlayın
-const GARANTI_CALLBACK_BASE = process.env.GARANTI_CALLBACK_BASE || 'https://www.tamyogastudio.com';
+// Callback base URL'i
+const GARANTI_CALLBACK_BASE = 'https://www.tamyogastudio.com';
 
 function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
   return `<!doctype html>
@@ -40,7 +40,7 @@ function redirectOnlyHtmlTop(target) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yönlendiriliyorr...</title>
+<title>Yönlendiriliyor...</title>
 </head>
 <body>
 <script>
@@ -89,7 +89,7 @@ export async function redirect(request) {
     const { wixTxn: wixTxnRaw, amountMinor, currency } = request.query || {};
     
     console.log('\n' + '='.repeat(70));
-    console.log('GARANTI REDIRECT REQUEST');
+    console.log('GARANTI REDIRECT REQUEST - PRODUCTION');
     console.log('='.repeat(70));
     console.log('Wix Transaction ID:', wixTxnRaw);
     console.log('Amount (kuruş):', amountMinor);
@@ -127,7 +127,7 @@ export async function redirect(request) {
     console.log('Tutar (TL):', amountTL);
     console.log('='.repeat(70));
 
-    // Garanti formunu üret
+    // Garanti formunu üret - ÖNEMLİ: installments BOŞ OLMALI!
     const { actionUrl, formFields } = await buildGarantiForm({
       orderId,
       amountMinor: String(amountMinor),
@@ -135,7 +135,7 @@ export async function redirect(request) {
       okUrl,
       failUrl,
       customerIp,
-      installments: '' // Peşin ödeme
+      installments: '' // PEŞİN ÖDEME İÇİN MUTLAKA BOŞ STRING!
     });
 
     // Form input'larını HTML'e dönüştür
@@ -189,7 +189,7 @@ export async function redirect(request) {
           if(sent) { e.preventDefault(); return; }
           sent = true;
           btn.disabled = true;
-          btn.textContent = 'Yönlendiriliyorr...';
+          btn.textContent = 'Yönlendiriliyor...';
         }, false);
       })();
       </script>
@@ -217,7 +217,7 @@ export async function redirect(request) {
 export async function callback(request) {
   try {
     console.log('\n' + '='.repeat(70));
-    console.log('GARANTI CALLBACK HANDLER');
+    console.log('GARANTI CALLBACK HANDLER - PRODUCTION');
     console.log('='.repeat(70));
     console.log('Method:', request.method);
     console.log('Query Params:', JSON.stringify(request.query));
@@ -283,7 +283,7 @@ export async function callback(request) {
 
     // Başarılı işlem
     if (approved && hashOk) {
-      console.log('\n✅ İŞLEM BAŞARILI - Wix\'e bildiriliyorr...');
+      console.log('\n✅ İŞLEM BAŞARILI - Wix\'e bildiriliyor...');
       
       try {
         if (wixTransactionId) {
@@ -312,7 +312,7 @@ export async function callback(request) {
     }
 
     // Başarısız işlem
-    console.error('\n❌ İŞLEM BAŞARIŞIZ');
+    console.error('\n❌ İŞLEM BAŞARISIZ');
     const reason = `Hata: ${procReturnCode} / MD: ${mdStatus} - ${errorMsg}`;
     const target = `/odeme/basarisiz?host=${encodeURIComponent(procReturnCode)}&msg=${encodeURIComponent(reason)}&orderId=${encodeURIComponent(orderId)}`;
 
