@@ -124,7 +124,7 @@ export async function redirect(request) {
 
     // *** DEĞİŞİKLİK: Taksit Seçimi İptal Edildi ***
     // Her zaman "1" (Peşin) olarak gönderiyoruz.
-    const installStr = ''; 
+    const installStr = '1'; 
 
     // Garanti formunu üret (Wrapper'daki yeni OOS yapısını kullanır)
     const { actionUrl, formFields } = await buildGarantiForm({
