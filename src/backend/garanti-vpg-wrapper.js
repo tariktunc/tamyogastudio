@@ -6,154 +6,195 @@ function clean(val) {
 }
 
 /**
- * SHA1 (Password Hash)
- * Kural: Password + PadLeft(TerminalID, 9, '0')
+ * [ADIM 1] Şifre Hashleme (SHA1)
+ * KRİTİK: Banka arka planda şifreyi doğrularken Terminal ID'nin 
+ * başına 0 eklenmiş (9 haneli) halini kullanır.
  */
-function createHashedPassword(password, terminalIdPadded) {
-    const raw = password + terminalIdPadded;
-    // ISO-8859-1 (Latin1) encoding kullanıyoruz
-    return crypto.createHash('sha1').update(raw, 'latin1').digest('hex').toUpperCase();
+function createHashedPassword(password, terminalId) {
+    // Terminal ID'yi 9 haneye tamamla (Örn: 30691297 -> 030691297)
+    const paddedId = terminalId.padStart(9, '0'); 
+    const rawData = password + paddedId;
+    
+    console.log('[Garanti-Wrapper] Password Hash Input:', `${password.substring(0, 2)}*** + ${paddedId}`);
+
+    return crypto.createHash('sha1')
+        .update(rawData, 'latin1')
+        .digest('hex')
+        .toUpperCase();
 }
 
 /**
- * SHA512 (Security Hash)
- * Sıralama: TerminalID + OrderID + Amount + Currency + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
+ * [ADIM 2] Güvenlik Hash'i (SHA512)
+ * KRİTİK: Buradaki Terminal ID, formda gönderilen (8 haneli) ile AYNI olmalıdır.
+ * Yoksa "Hash Hatası" alırsınız.
  */
-function createSecure3DHash(params) {
-    const str = 
-        params.terminalId +     // Burası Padded (9 hane) mi yoksa Raw (8 hane) mi olmalı? Garanti genelde Padded sever.
-        params.orderId + 
-        params.amount + 
-        params.currency + 
-        params.okUrl + 
-        params.failUrl + 
-        params.type + 
-        params.installment + 
-        params.storeKey + 
-        params.hashedPassword;
+function createSecure3DHash(data) {
+    const plainText = 
+        data.terminalId + // Formdaki ID (8 hane)
+        data.orderId + 
+        data.amount + 
+        data.currency + 
+        data.okUrl + 
+        data.failUrl + 
+        data.txnType + 
+        data.installment + 
+        data.storeKey + 
+        data.hashedPassword; // 9 haneli ID ile üretilmiş şifre hash'i
 
-    return {
-        hash: crypto.createHash('sha512').update(str, 'latin1').digest('hex').toUpperCase(),
-        debugString: str
-    };
+    console.log('[Garanti-Wrapper] Main Hash Input:', plainText);
+
+    return crypto.createHash('sha512')
+        .update(plainText, 'latin1')
+        .digest('hex')
+        .toUpperCase();
 }
 
-export async function buildPayHostingForm(options) {
-    const { orderId, amountMinor, okUrl, failUrl, installments, txnType, customerIp, email } = options;
-
-    // Secrets
-    const [rawTermId, storeNo, password, rawStoreKey] = await Promise.all([
+export async function buildPayHostingForm({
+    orderId,
+    amountMinor, 
+    currency = '949',
+    okUrl,
+    failUrl,
+    installments = '', 
+    txnType = 'sales',
+    customerIp,
+    email = 'test@example.com'
+}) {
+    // 1. Secret'ları Çek
+    const [rawTerminalId, storeNo, password, rawStoreKey] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
         getSecret('GARANTI_STORE_NO'),
-        getSecret('GARANTI_TERMINAL_PASSWORD'),
-        getSecret('GARANTI_ENC_KEY')
+        getSecret('GARANTI_TERMINAL_PASSWORD'), 
+        getSecret('GARANTI_ENC_KEY')            
     ]);
 
-    // 1. Terminal ID Hazırlığı
-    const termIdRaw = clean(rawTermId).replace(/^0+/, ''); // 8 Hane (örn: 30691297)
-    const termIdPad = termIdRaw.padStart(9, '0');          // 9 Hane (örn: 030691297)
+    if (!rawTerminalId || !rawStoreKey || !password) {
+        throw new Error('Garanti Secrets eksik!');
+    }
 
-    // 2. Diğer Değerler
-    const amount = String(amountMinor); // "100"
-    const currency = '949';
-    const inst = installments || ''; // Boşsa boş string, test için '1' gönderiyoruz service'den.
-    const type = txnType || 'sales';
+    // 2. Veri Hazırlığı
+    // Terminal ID'yi Secrets'tan geldiği gibi (varsa başındaki 0'ları temizleyerek) alıyoruz.
+    // Örn: "30691297" (8 hane) -> Form'da bu gidecek.
+    const terminalIdRaw = clean(rawTerminalId).replace(/^0+/, '');
+    
     const storeKey = clean(rawStoreKey);
+    const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
+    const amount = String(amountMinor); // Kuruş cinsinden (100 = 1.00 TL)
+
+    // Taksit: Test ortamı boş taksiti sevmez, peşin için "1" gönderiyoruz.
+    let installmentStr = String(installments || '1');
+    if (installmentStr === '0' || installmentStr === '') installmentStr = '1';
+
+    const type = txnType || 'sales';
 
     // 3. Hash Hesaplama
-    // A. Password Hash -> Kesinlikle 9 Hane ID ile
-    const passHash = createHashedPassword(clean(password), termIdPad);
+    // A. Şifre Hash: Padded ID (030691297) kullanır.
+    const hashedPassword = createHashedPassword(clean(password), terminalIdRaw);
 
-    // B. Main Hash -> BURASI KRİTİK. 
-    // "Input Invalid" alıyorsak Form'a Raw(8) koyuyoruz.
-    // "Hash Error" alıyorsak Hash'e Pad(9) koymayı deniyoruz.
-    // Garanti OOS dökümanları genellikle Hash içinde de Padded ID ister.
-    const { hash, debugString } = createSecure3DHash({
-        terminalId: termIdRaw, // DİKKAT: Formda 8 gidiyorsa hash'e de 8 koyalım (Önceki denemede hash tutmadı).
-                               // Eğer yine MD7 alırsak burayı termIdPad (9) yapacağız.
-                               // Şimdilik Tutarlılık İlkesi gereği Form = Hash = 8 hane deniyoruz.
-        orderId,
-        amount,
-        currency,
-        okUrl,
-        failUrl,
-        type,
-        installment: inst,
-        storeKey,
-        hashedPassword: passHash
+    // B. Ana Hash: Raw ID (30691297) kullanır.
+    const securityHash = createSecure3DHash({
+        terminalId: terminalIdRaw, // 8 Hane
+        orderId: orderId,
+        amount: amount,
+        currency: currencyCode,
+        okUrl: okUrl,
+        failUrl: failUrl,
+        txnType: type,
+        installment: installmentStr,
+        storeKey: storeKey,
+        hashedPassword: hashedPassword
     });
 
+    // 4. Banka URL (Test)
+    const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
+
+    // 5. Form Alanları
+    // "OOS_PAY" -> Ortak Ödeme Sayfası (Kart bilgisi istemez, bankaya yönlendirir)
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
-        secure3dsecuritylevel: 'OOS_PAY',
+        secure3dsecuritylevel: 'OOS_PAY', // <--- İŞTE SİHİRLİ KELİME BU
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
-        terminalid: termIdRaw, // FORM: 8 Hane (30691297) - Banka 9 haneyi reddediyor (Input error)
+        terminalid: terminalIdRaw, // Formda 8 Hane Gider (Input hatasını önler)
         orderid: orderId,
-        customeripaddress: customerIp,
+        customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
         txnamount: amount,
-        txncurrencycode: currency,
+        txncurrencycode: currencyCode,
         txntype: type,
-        txninstallmentcount: inst,
+        txninstallmentcount: installmentStr,
         successurl: okUrl,
         errorurl: failUrl,
-        secure3dhash: hash,
+        secure3dhash: securityHash,
         lang: 'tr',
+        refreshtime: '10',
         txntimestamp: new Date().toISOString()
     };
 
-    // Debug için hash string'ini de dönüyoruz
-    return { 
-        actionUrl: 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine', 
-        formFields,
-        debugString
-    };
+    return { actionUrl, formFields };
 }
 
-export async function verifyCallbackHash(post) {
+/**
+ * Callback Hash Doğrulama
+ */
+export async function verifyCallbackHash(postBody) {
     try {
-        const storeKey = clean(await getSecret('GARANTI_ENC_KEY'));
-        
-        // Gelen parametreleri normalize et
-        const p = (k) => post[k] || '';
-        
-        const bankHash = p('hash') || p('secure3dhash');
-        const hashParams = p('hashparams');
-        
-        if (!bankHash || !hashParams) {
-            console.warn('Verify: Hash params eksik');
+        const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
+        const storeKey = clean(rawStoreKey);
+
+        const getParam = (key) => {
+            const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
+            return foundKey ? postBody[foundKey] : null;
+        };
+
+        const responseHash = getParam('hash') || getParam('secure3dhash');
+        const hashParams = getParam('hashparams');
+
+        if (!responseHash || !hashParams) {
             return false;
         }
 
-        // HashParams'daki sıraya göre string oluştur
-        const keys = hashParams.split(':');
-        let rawStr = '';
-        keys.forEach(key => {
-            if(key) rawStr += p(key.toLowerCase());
-        });
-        rawStr += storeKey; // En sona storeKey ekle
+        const paramList = String(hashParams).split(':');
+        let digestData = '';
+        
+        for (const param of paramList) {
+            if (!param) continue;
+            const val = getParam(param);
+            if (val !== null && val !== undefined) {
+                digestData += val;
+            }
+        }
+        
+        digestData += storeKey;
 
-        // Hashle
-        const myHash = crypto.createHash('sha512').update(rawStr, 'latin1').digest('hex').toUpperCase();
+        const calculatedHash = crypto.createHash('sha512')
+            .update(digestData, 'latin1')
+            .digest('hex')
+            .toUpperCase();
 
-        console.log('VERIFY HASH INPUT:', rawStr);
-        console.log('VERIFY HASH CALC:', myHash);
-        console.log('VERIFY HASH BANK:', bankHash);
-
-        return myHash === bankHash.toUpperCase();
+        return (responseHash.toUpperCase() === calculatedHash);
 
     } catch (e) {
-        console.error(e);
+        console.error('Verify Error:', e);
         return false;
     }
 }
 
-export function isApproved(post) {
-    const md = post['mdstatus'];
-    const code = post['procreturncode'];
-    const resp = post['response'];
-    return ['1','2','3','4'].includes(md) && (code === '00' || String(resp).toLowerCase() === 'approved');
+export function isApproved(postBody) {
+    const getParam = (key) => {
+        const found = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
+        return found ? postBody[found] : '';
+    };
+
+    const mdStatus = getParam('mdstatus');
+    const procReturnCode = getParam('procreturncode');
+    const response = getParam('response');
+
+    // OOS modelinde MDStatus dönüşü başarılı işlemler için genelde 1'dir.
+    const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
+    const procOk = String(procReturnCode) === '00' || String(response).toLowerCase() === 'approved';
+
+    return mdOk && procOk;
 }
