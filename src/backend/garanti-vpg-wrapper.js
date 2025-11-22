@@ -10,21 +10,24 @@ function clean(val) {
  * Terminal ID'nin bankadan geldiği formatta (genelde 9 hane) kullanılır.
  */
 function createHashedPassword(password, terminalId) {
-    // Terminal ID'yi 9 haneye tamamla (örn: 30691297 -> 030691297)
+    // Terminal ID'yi 9 haneye tamamla
     const paddedId = terminalId.padStart(9, '0'); 
     const rawData = password + paddedId;
     
-    console.log('[Garanti-Wrapper] Password Hash Input:', `${password.substring(0, 2)}*** + ${paddedId}`);
+    console.log('[Garanti-Wrapper] Password Hash - Terminal ID (padded):', paddedId);
+    console.log('[Garanti-Wrapper] Password Hash - Raw Data:', `***${password.length}chars*** + ${paddedId}`);
 
-    return crypto.createHash('sha1')
+    const hash = crypto.createHash('sha1')
         .update(rawData, 'latin1')
         .digest('hex')
         .toUpperCase();
+    
+    console.log('[Garanti-Wrapper] Password Hash Result:', hash);
+    return hash;
 }
 
 /**
  * [ADIM 2] Güvenlik Hash'i (SHA512)
- * KRITIK: Terminal ID formdaki ile AYNI olmalı (genelde 9 hane).
  */
 function createSecure3DHash(data) {
     const plainText = 
@@ -39,12 +42,25 @@ function createSecure3DHash(data) {
         data.storeKey + 
         data.hashedPassword;
 
-    console.log('[Garanti-Wrapper] Main Hash Input:', plainText);
+    console.log('[Garanti-Wrapper] Main Hash Components:');
+    console.log('  TerminalID:', data.terminalId);
+    console.log('  OrderID:', data.orderId);
+    console.log('  Amount:', data.amount);
+    console.log('  Currency:', data.currency);
+    console.log('  OkURL:', data.okUrl);
+    console.log('  FailURL:', data.failUrl);
+    console.log('  TxnType:', data.txnType);
+    console.log('  Installment:', data.installment);
+    console.log('  StoreKey:', `***${data.storeKey.length}chars***`);
+    console.log('  HashedPassword:', data.hashedPassword);
 
-    return crypto.createHash('sha512')
+    const hash = crypto.createHash('sha512')
         .update(plainText, 'latin1')
         .digest('hex')
         .toUpperCase();
+    
+    console.log('[Garanti-Wrapper] Main Hash Result:', hash);
+    return hash;
 }
 
 export async function buildPayHostingForm({
@@ -58,6 +74,11 @@ export async function buildPayHostingForm({
     customerIp,
     email = 'test@example.com'
 }) {
+    console.log('\n========== GARANTI PAYMENT REQUEST ==========');
+    console.log('Order ID:', orderId);
+    console.log('Amount (kuruş):', amountMinor);
+    console.log('Currency:', currency);
+    
     // 1. Secret'ları Çek
     const [rawTerminalId, storeNo, password, rawStoreKey] = await Promise.all([
         getSecret('GARANTI_TERMINAL_ID'),
@@ -70,27 +91,38 @@ export async function buildPayHostingForm({
         throw new Error('Garanti Secrets eksik!');
     }
 
-    // 2. Terminal ID'yi olduğu gibi kullan (leading zero'ları KORUYARAK)
+    console.log('Secrets loaded:');
+    console.log('  Terminal ID (raw):', rawTerminalId);
+    console.log('  Store No:', storeNo);
+    console.log('  Password length:', password.length);
+    console.log('  Store Key length:', rawStoreKey.length);
+
+    // 2. Değerleri temizle ve hazırla
     const terminalId = clean(rawTerminalId);
-    
-    // Terminal ID 9 haneye tamamlanmalı (bankadan genelde 8-9 hane gelir)
-    const terminalIdPadded = terminalId.padStart(9, '0');
-    
     const storeKey = clean(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
-    const amount = String(amountMinor);
+    const amount = String(amountMinor); // Kuruş cinsinden
 
-    let installmentStr = String(installments || '1');
-    if (installmentStr === '0' || installmentStr === '') installmentStr = '1';
+    // Taksit kontrolü
+    let installmentStr = String(installments || '');
+    if (installmentStr === '0' || installmentStr === '') {
+        installmentStr = ''; // Peşin için BOŞ gönder
+    }
 
     const type = txnType || 'sales';
 
+    console.log('\nProcessed values:');
+    console.log('  Terminal ID (cleaned):', terminalId);
+    console.log('  Currency Code:', currencyCode);
+    console.log('  Amount:', amount);
+    console.log('  Installment:', installmentStr || '(empty for cash)');
+    console.log('  Type:', type);
+
     // 3. Hash Hesaplama
-    // Her iki hash için de AYNI Terminal ID kullanılmalı
-    const hashedPassword = createHashedPassword(clean(password), terminalIdPadded);
+    const hashedPassword = createHashedPassword(clean(password), terminalId);
     
     const securityHash = createSecure3DHash({
-        terminalId: terminalIdPadded, // 9 hane, padding ile
+        terminalId: terminalId,
         orderId: orderId,
         amount: amount,
         currency: currencyCode,
@@ -102,14 +134,10 @@ export async function buildPayHostingForm({
         hashedPassword: hashedPassword
     });
 
-    console.log('[Garanti-Wrapper] Using Terminal ID:', terminalIdPadded);
-    console.log('[Garanti-Wrapper] Order ID:', orderId);
-    console.log('[Garanti-Wrapper] Amount (kuruş):', amount);
-
-    // 4. Banka URL (Test)
+    // 4. Banka URL
     const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
 
-    // 5. Form Alanları
+    // 5. Form Alanları - ÖNEMLI: Garanti OOS için doğru yapı
     const formFields = {
         mode: 'TEST',
         apiversion: '512',
@@ -117,21 +145,30 @@ export async function buildPayHostingForm({
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
         terminalmerchantid: clean(storeNo),
-        terminalid: terminalIdPadded, // 9 haneli ID gönder
-        orderid: orderId,
-        customeripaddress: customerIp || '127.0.0.1',
-        customeremailaddress: email,
+        terminalid: terminalId,
+        txntype: type,
         txnamount: amount,
         txncurrencycode: currencyCode,
-        txntype: type,
         txninstallmentcount: installmentStr,
+        orderid: orderId,
         successurl: okUrl,
         errorurl: failUrl,
+        customeripaddress: customerIp || '127.0.0.1',
+        customeremailaddress: email,
         secure3dhash: securityHash,
         lang: 'tr',
-        refreshtime: '10',
-        txntimestamp: new Date().toISOString()
+        refreshtime: '10'
     };
+
+    console.log('\n========== FORM FIELDS TO SEND ==========');
+    Object.entries(formFields).forEach(([key, value]) => {
+        if (key === 'secure3dhash') {
+            console.log(`${key}: ${value}`);
+        } else {
+            console.log(`${key}: ${value}`);
+        }
+    });
+    console.log('===========================================\n');
 
     return { actionUrl, formFields };
 }
@@ -141,6 +178,9 @@ export async function buildPayHostingForm({
  */
 export async function verifyCallbackHash(postBody) {
     try {
+        console.log('\n========== GARANTI CALLBACK RECEIVED ==========');
+        console.log('Full POST body keys:', Object.keys(postBody));
+        
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const storeKey = clean(rawStoreKey);
 
@@ -149,11 +189,23 @@ export async function verifyCallbackHash(postBody) {
             return foundKey ? postBody[foundKey] : null;
         };
 
+        // Tüm kritik alanları logla
+        console.log('Critical callback fields:');
+        console.log('  mdstatus:', getParam('mdstatus'));
+        console.log('  procreturncode:', getParam('procreturncode'));
+        console.log('  response:', getParam('response'));
+        console.log('  mderrormessage:', getParam('mderrormessage'));
+        console.log('  errmsg:', getParam('errmsg'));
+
         const responseHash = getParam('hash') || getParam('secure3dhash');
         const hashParams = getParam('hashparams');
 
+        console.log('  hash/secure3dhash:', responseHash ? 'Present' : 'MISSING');
+        console.log('  hashparams:', hashParams || 'MISSING');
+
         if (!responseHash || !hashParams) {
-            console.error('[Garanti-Wrapper] Hash verification failed: Missing hash or hashparams');
+            console.error('[Garanti-Wrapper] ⚠️ Hash verification SKIPPED - Missing hash or hashparams');
+            console.error('This indicates the bank rejected the transaction before completing 3D authentication');
             return false;
         }
 
@@ -161,16 +213,19 @@ export async function verifyCallbackHash(postBody) {
         let digestData = '';
         
         console.log('[Garanti-Wrapper] Hash params order:', hashParams);
+        console.log('[Garanti-Wrapper] Building hash from params:');
         
         for (const param of paramList) {
             if (!param) continue;
             const val = getParam(param);
             if (val !== null && val !== undefined) {
+                console.log(`  ${param}: ${val}`);
                 digestData += val;
             }
         }
         
         digestData += storeKey;
+        console.log(`  storekey: ***${storeKey.length}chars***`);
 
         const calculatedHash = crypto.createHash('sha512')
             .update(digestData, 'latin1')
@@ -180,11 +235,11 @@ export async function verifyCallbackHash(postBody) {
         const isValid = (responseHash.toUpperCase() === calculatedHash);
         
         if (!isValid) {
-            console.error('[Garanti-Wrapper] Hash mismatch!');
+            console.error('[Garanti-Wrapper] ❌ Hash mismatch!');
             console.error('Expected:', calculatedHash);
             console.error('Received:', responseHash.toUpperCase());
         } else {
-            console.log('[Garanti-Wrapper] Hash verification successful');
+            console.log('[Garanti-Wrapper] ✅ Hash verification successful');
         }
 
         return isValid;
@@ -205,11 +260,16 @@ export function isApproved(postBody) {
     const procReturnCode = getParam('procreturncode');
     const response = getParam('response');
 
-    console.log('[Garanti-Wrapper] Approval check - MDStatus:', mdStatus, 'ProcReturnCode:', procReturnCode);
+    console.log('[Garanti-Wrapper] Approval check:');
+    console.log('  MDStatus:', mdStatus);
+    console.log('  ProcReturnCode:', procReturnCode);
+    console.log('  Response:', response);
 
-    // OOS modelinde MDStatus başarılı işlemler için genelde 1'dir
     const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
     const procOk = String(procReturnCode) === '00' || String(response).toLowerCase() === 'approved';
 
-    return mdOk && procOk;
+    const approved = mdOk && procOk;
+    console.log('  Result:', approved ? '✅ APPROVED' : '❌ REJECTED');
+
+    return approved;
 }

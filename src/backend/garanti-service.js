@@ -7,10 +7,8 @@ import {
   isApproved as isGarantiApproved
 } from 'backend/garanti-vpg-wrapper';
 
-// Callback Base URL
 const GARANTI_CALLBACK_BASE = 'https://www.tamyogastudio.com';
 
-// HTML Şablonu
 function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
   return `<!doctype html>
 <html lang="tr">
@@ -24,7 +22,6 @@ function htmlPage({ title = 'Ödeme', bodyInner = '' } = {}) {
 </html>`;
 }
 
-// Başarı durumunda üst pencereyi yönlendiren HTML
 function redirectOnlyHtmlTop(target) {
   const safe = String(target || '/');
   return `<!doctype html>
@@ -52,7 +49,6 @@ try{
 </html>`;
 }
 
-// Popup kapatan HTML
 function autoCloseHtml({ redirect = '/' } = {}) {
   const safe = String(redirect || '/');
   return `<!doctype html>
@@ -96,9 +92,14 @@ try{
 export async function redirect(request) {
   try {
     const { wixTxn: wixTxnRaw, amountMinor, currency } = request.query || {};
-    console.log('get_garantiRedirect in', { wixTxnRaw, amountMinor, currency });
+    console.log('\n========== GARANTI REDIRECT REQUEST ==========');
+    console.log('Wix Transaction ID:', wixTxnRaw);
+    console.log('Amount (minor):', amountMinor);
+    console.log('Currency:', currency);
+    console.log('Customer IP:', request.ip);
 
     if (!wixTxnRaw || !amountMinor || !(Number(amountMinor) > 0)) {
+      console.error('❌ Invalid parameters');
       return badRequest({
         headers: { 'Content-Type': 'text/plain' },
         body: 'missing or invalid params'
@@ -108,7 +109,6 @@ export async function redirect(request) {
     const customerIp = request.ip;
     const callbackBase = GARANTI_CALLBACK_BASE;
 
-    // Wix return url parametreleri (sadece taksit seçim ekranında hidden input olarak kullanıyoruz)
     const successUrl = request.query.successUrl ? String(request.query.successUrl) : '';
     const errorUrl   = request.query.errorUrl   ? String(request.query.errorUrl)   : '';
 
@@ -116,17 +116,22 @@ export async function redirect(request) {
       .slice(0, 28)
       .toUpperCase();
 
-    // Callback URL'leri
     const okUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
     const failUrl = `${String(callbackBase).replace(/\/+$/, '')}/_functions/garantiCallback?wixTransactionId=${encodeURIComponent(wixTxnRaw)}`;
 
+    console.log('Generated Order ID:', orderId);
+    console.log('Callback URLs:');
+    console.log('  Success:', okUrl);
+    console.log('  Fail:', failUrl);
+
     const amount = (parseInt(String(amountMinor), 10) / 100).toFixed(2);
+    const installStr = ''; // Peşin için BOŞ
 
-    // *** DEĞİŞİKLİK: Taksit Seçimi İptal Edildi ***
-    // Her zaman "1" (Peşin) olarak gönderiyoruz.
-    const installStr = '1'; 
+    console.log('Payment Details:');
+    console.log('  Amount (TL):', amount);
+    console.log('  Installment:', installStr || '(cash payment)');
 
-    // Garanti formunu üret (Wrapper'daki yeni OOS yapısını kullanır)
+    // Garanti formunu üret
     const { actionUrl, formFields } = await buildGarantiForm({
       orderId,
       amountMinor,
@@ -141,7 +146,6 @@ export async function redirect(request) {
       .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v ?? '').replace(/"/g, '&quot;')}">`)
       .join('\n');
 
-    // Doğrudan Ödeme Onay Ekranı (Taksit seçimi yok)
     const confirmHtml = `
       <div class="card" id="akb-card-confirm" role="main" aria-label="Ödeme Onay">
         <h1 id="akb-title-confirm">Ödeme Onayı (Garanti BBVA)</h1>
@@ -176,12 +180,15 @@ export async function redirect(request) {
       </script>
     `;
 
+    console.log('✅ Redirect page generated successfully');
+    console.log('===========================================\n');
+
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
       body: htmlPage({ title: 'Ödeme Onayı (Garanti)', bodyInner: confirmHtml })
     });
   } catch (e) {
-    console.error('Garanti redirect ERROR:', e);
+    console.error('❌ Garanti redirect ERROR:', e);
     return badRequest({
       headers: { 'Content-Type': 'text/plain' },
       body: String(e && e.message ? e.message : e)
@@ -194,12 +201,17 @@ export async function redirect(request) {
 // =====================================================================
 export async function callback(request) {
   try {
+    console.log('\n========== GARANTI CALLBACK HANDLER ==========');
+    console.log('Request Method:', request.method);
+    console.log('Query Params:', request.query);
+    
     let post = {};
     try {
       const raw = await request.body.text();
+      console.log('Raw POST Body:', raw);
       post = Object.fromEntries(new URLSearchParams(raw || ''));
     } catch (e) {
-      console.error('Garanti Callback Parse Error:', e);
+      console.error('❌ Callback Parse Error:', e);
       post = {};
     }
 
@@ -208,7 +220,8 @@ export async function callback(request) {
       normalizedPost[key.toLowerCase()] = post[key];
     });
 
-    console.log('post_garantiCallback received:', normalizedPost);
+    console.log('Normalized POST keys:', Object.keys(normalizedPost));
+    console.log('Full normalized POST:', JSON.stringify(normalizedPost, null, 2));
 
     const wixTransactionId =
       (request.query && request.query.wixTransactionId) ||
@@ -219,18 +232,27 @@ export async function callback(request) {
     const orderId = normalizedPost.oid || normalizedPost.orderid || '';
     const amount = normalizedPost.txnamount || normalizedPost.amount || '';
 
+    console.log('Transaction Details:');
+    console.log('  Wix Transaction ID:', wixTransactionId);
+    console.log('  Order ID:', orderId);
+    console.log('  Amount:', amount);
+
     const successUrl = request.query && request.query.successUrl ? String(request.query.successUrl) : '';
     const errorUrl   = request.query && request.query.errorUrl   ? String(request.query.errorUrl)   : '';
 
     let hashOk = false;
     try {
       hashOk = await verifyGarantiHash(normalizedPost);
+      console.log('Hash Verification Result:', hashOk ? '✅ VALID' : '❌ INVALID');
     } catch (e) {
-      console.error('post_garantiCallback verifyGarantiHash error:', e);
+      console.error('❌ Hash verification error:', e);
       hashOk = false;
     }
 
-    if (!hashOk) console.warn('GARANTI CALLBACK: Hash mismatch or missing params.');
+    if (!hashOk) {
+      console.warn('⚠️ GARANTI CALLBACK: Hash mismatch or missing params.');
+      console.warn('This is NORMAL if MDStatus=7 (bank rejected the initial request)');
+    }
 
     const approved = isGarantiApproved(normalizedPost);
     const hostCode = String(normalizedPost.procreturncode || '');
@@ -242,9 +264,15 @@ export async function callback(request) {
         'İşlem banka tarafından reddedildi.'
       );
 
-    console.log(`Transaction Approval: ${approved} (MD: ${mdStatus}, Code: ${hostCode})`);
+    console.log('Final Status:');
+    console.log('  Approved:', approved);
+    console.log('  Host Code:', hostCode);
+    console.log('  MD Status:', mdStatus);
+    console.log('  Error Message:', bankErrorMsg);
 
     if (approved && hashOk) {
+      console.log('✅ Payment SUCCESSFUL - Submitting to Wix');
+      
       try {
         if (wixTransactionId) {
           await wixPaymentProviderBackend.submitEvent({
@@ -258,9 +286,10 @@ export async function callback(request) {
               }
             }
           });
+          console.log('✅ Wix event submitted successfully');
         }
       } catch (e) {
-        console.warn('submitEvent error (ignored):', e);
+        console.warn('⚠️ submitEvent error (ignored):', e);
       }
 
       const target =
@@ -268,6 +297,9 @@ export async function callback(request) {
         `/odeme/basarili?wixTxn=${encodeURIComponent(wixTransactionId)}&orderId=${encodeURIComponent(
           orderId
         )}&amount=${encodeURIComponent(amount)}`;
+
+      console.log('Redirecting to:', target);
+      console.log('===========================================\n');
 
       if (successUrl) {
         return ok({
@@ -282,12 +314,15 @@ export async function callback(request) {
     }
 
     const reason = `Hata Kodu: ${hostCode} / MD: ${mdStatus}. ${bankErrorMsg}` + (hashOk ? '' : ' (Hash Hatası!)');
-    console.warn(`Failed Transaction (oid: ${orderId}). Reason: ${reason}`);
+    console.error('❌ Payment FAILED:', reason);
 
     const fallbackErr = `/odeme/basarisiz?host=${encodeURIComponent(
       hostCode
     )}&msg=${encodeURIComponent(reason)}&orderId=${encodeURIComponent(orderId)}`;
     const target = errorUrl || fallbackErr;
+
+    console.log('Redirecting to error page:', target);
+    console.log('===========================================\n');
 
     if (errorUrl) {
       const errHtml = `
@@ -310,7 +345,7 @@ export async function callback(request) {
       body: autoCloseHtml({ redirect: target })
     });
   } catch (err) {
-    console.error('post_garantiCallback fatal', err);
+    console.error('❌ Callback FATAL ERROR:', err);
     const target = '/';
     return ok({
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
