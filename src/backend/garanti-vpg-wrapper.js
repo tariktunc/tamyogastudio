@@ -1,29 +1,22 @@
 import { getSecret } from 'wix-secrets-backend';
 import crypto from 'crypto';
 
-/**
- * Helper: Değerleri temiz stringe çevirir.
- */
 function clean(val) {
-    return val ? String(val).trim() : '';
+    return String(val || '').trim();
 }
 
 /**
- * [ADIM 1] Garanti Şifre Hashleme (SHA1)
- * Kural: SHA1(TerminalPassword + PadLeft(TerminalID, 9, '0'))
- * Çıktı: Büyük harf HEX string
+ * [ADIM 1] Şifre Hashleme (SHA1)
+ * KRİTİK: Banka arka planda şifreyi doğrularken Terminal ID'nin 
+ * başına 0 eklenmiş (9 haneli) halini kullanır.
  */
 function createHashedPassword(password, terminalId) {
-    // Terminal ID mutlaka 9 hane olmalı (Başına 0 eklenerek)
-    const paddedTerminalId = terminalId.padStart(9, '0');
+    // Terminal ID'yi 9 haneye tamamla (Örn: 30691297 -> 030691297)
+    const paddedId = terminalId.padStart(9, '0'); 
+    const rawData = password + paddedId;
     
-    // Şifre + PaddedID birleşimi
-    const rawData = password + paddedTerminalId;
+    console.log('[Garanti-Wrapper] Password Hash Input:', `${password.substring(0, 2)}*** + ${paddedId}`);
 
-    // Debug için log (Canlıda kaldırabilirsiniz)
-    console.log('[Garanti-Wrapper] HashedPassword Input:', `${password.substring(0, 2)}*** + ${paddedTerminalId}`);
-
-    // SHA1 hash üretimi (Latin1 encoding Garanti için kritiktir)
     return crypto.createHash('sha1')
         .update(rawData, 'latin1')
         .digest('hex')
@@ -31,31 +24,24 @@ function createHashedPassword(password, terminalId) {
 }
 
 /**
- * [ADIM 2] Güvenlik Hash'i Oluşturma (SHA512)
- * Kural: TerminalID + OrderID + Amount + Currency + OkUrl + FailUrl + Type + Installment + StoreKey + HashedPassword
- * Çıktı: Büyük harf HEX string
+ * [ADIM 2] Güvenlik Hash'i (SHA512)
+ * KRİTİK: Buradaki Terminal ID, formda gönderilen (8 haneli) ile AYNI olmalıdır.
+ * Yoksa "Hash Hatası" alırsınız.
  */
 function createSecure3DHash(data) {
-    const {
-        terminalId, orderId, amount, currency, 
-        okUrl, failUrl, txnType, installment, 
-        storeKey, hashedPassword
-    } = data;
-
-    // Sıralama çok önemlidir, banka bu sırayı bekler:
     const plainText = 
-        terminalId + 
-        orderId + 
-        amount + 
-        currency + 
-        okUrl + 
-        failUrl + 
-        txnType + 
-        installment + 
-        storeKey + 
-        hashedPassword;
+        data.terminalId + // Formdaki ID (8 hane)
+        data.orderId + 
+        data.amount + 
+        data.currency + 
+        data.okUrl + 
+        data.failUrl + 
+        data.txnType + 
+        data.installment + 
+        data.storeKey + 
+        data.hashedPassword; // 9 haneli ID ile üretilmiş şifre hash'i
 
-    console.log('[Garanti-Wrapper] Hash String:', plainText);
+    console.log('[Garanti-Wrapper] Main Hash Input:', plainText);
 
     return crypto.createHash('sha512')
         .update(plainText, 'latin1')
@@ -63,178 +49,139 @@ function createSecure3DHash(data) {
         .toUpperCase();
 }
 
-/**
- * Form Oluşturucu Fonksiyon
- */
 export async function buildPayHostingForm({
     orderId,
-    amountMinor, // Wix'ten "100" (1.00 TL) veya "1250" (12.50 TL) olarak gelir.
+    amountMinor, 
     currency = '949',
     okUrl,
     failUrl,
-    installments = '',
+    installments = '', 
     txnType = 'sales',
     customerIp,
     email = 'test@example.com'
 }) {
     // 1. Secret'ları Çek
     const [rawTerminalId, storeNo, password, rawStoreKey] = await Promise.all([
-        getSecret('GARANTI_TERMINAL_ID'),       // Örn: 30691297
-        getSecret('GARANTI_STORE_NO'),          // Örn: 1001
-        getSecret('GARANTI_TERMINAL_PASSWORD'), // Örn: 12345678
-        getSecret('GARANTI_ENC_KEY')            // Örn: 12345678
+        getSecret('GARANTI_TERMINAL_ID'),
+        getSecret('GARANTI_STORE_NO'),
+        getSecret('GARANTI_TERMINAL_PASSWORD'), 
+        getSecret('GARANTI_ENC_KEY')            
     ]);
 
     if (!rawTerminalId || !rawStoreKey || !password) {
-        throw new Error('Garanti Secrets (TerminalID, Password veya StoreKey) eksik!');
+        throw new Error('Garanti Secrets eksik!');
     }
 
-    // 2. Verileri Formatla
-    // Terminal ID: Başındaki sıfırları temizleyip tekrar 9 haneye tamamlıyoruz (Garanti standardı)
-    const terminalId = clean(rawTerminalId).replace(/^0+/, '').padStart(9, '0');
+    // 2. Veri Hazırlığı
+    // Terminal ID'yi Secrets'tan geldiği gibi (varsa başındaki 0'ları temizleyerek) alıyoruz.
+    // Örn: "30691297" (8 hane) -> Form'da bu gidecek.
+    const terminalIdRaw = clean(rawTerminalId).replace(/^0+/, '');
+    
     const storeKey = clean(rawStoreKey);
     const currencyCode = (currency === 'TRY' || currency === 'TL') ? '949' : clean(currency);
-    
-    // Tutar: Garanti VPG, kuruş cinsinden (noktasız) ister. Wix zaten böyle gönderir.
-    // Örn: 1.00 TL -> "100"
-    const amount = String(amountMinor);
+    const amount = String(amountMinor); // Kuruş cinsinden (100 = 1.00 TL)
 
-    // Taksit: Peşin ise boş string, taksit ise sayı stringi (örn: "3")
-    let installmentStr = '';
-    if (installments && installments !== '0' && installments !== '1') {
-        installmentStr = String(installments);
-    }
+    // Taksit: Test ortamı boş taksiti sevmez, peşin için "1" gönderiyoruz.
+    let installmentStr = String(installments || '1');
+    if (installmentStr === '0' || installmentStr === '') installmentStr = '1';
 
-    // İşlem Tipi: Genelde "sales"
     const type = txnType || 'sales';
 
-    // 3. Hash Hesaplamaları
-    // A. Şifreyi Hashle
-    const hashedPassword = createHashedPassword(clean(password), terminalId);
+    // 3. Hash Hesaplama
+    // A. Şifre Hash: Padded ID (030691297) kullanır.
+    const hashedPassword = createHashedPassword(clean(password), terminalIdRaw);
 
-    // B. Ana Hash'i Oluştur
+    // B. Ana Hash: Raw ID (30691297) kullanır.
     const securityHash = createSecure3DHash({
-        terminalId,
-        orderId,
-        amount,
+        terminalId: terminalIdRaw, // 8 Hane
+        orderId: orderId,
+        amount: amount,
         currency: currencyCode,
-        okUrl,
-        failUrl,
+        okUrl: okUrl,
+        failUrl: failUrl,
         txnType: type,
         installment: installmentStr,
-        storeKey,
-        hashedPassword
+        storeKey: storeKey,
+        hashedPassword: hashedPassword
     });
 
-    // 4. Test Ortamı URL'si (Birebir bankanın test URL'si)
+    // 4. Banka URL (Test)
     const actionUrl = 'https://sanalposprovtest.garantibbva.com.tr/servlet/gt3dengine';
 
-    // 5. Form Alanları (Banka dökümanındaki isimlerle birebir)
+    // 5. Form Alanları
+    // "OOS_PAY" -> Ortak Ödeme Sayfası (Kart bilgisi istemez, bankaya yönlendirir)
     const formFields = {
-        mode: 'TEST',               // Test ortamı için zorunlu
-        apiversion: '512',          // Standart versiyon
-        secure3dsecuritylevel: 'OOS_PAY', // 3D Hosting Modeli
-        
-        // Test ortamı için "PROVAUT" kullanıcıları standarttır
+        mode: 'TEST',
+        apiversion: '512',
+        secure3dsecuritylevel: 'OOS_PAY', // <--- İŞTE SİHİRLİ KELİME BU
         terminalprovuserid: 'PROVAUT',
         terminaluserid: 'PROVAUT',
-        
         terminalmerchantid: clean(storeNo),
-        terminalid: terminalId,     // 9 Haneli (030xxxxxx)
+        terminalid: terminalIdRaw, // Formda 8 Hane Gider (Input hatasını önler)
         orderid: orderId,
-        
         customeripaddress: customerIp || '127.0.0.1',
         customeremailaddress: email,
-        
-        txnamount: amount,          // "100" formatında
+        txnamount: amount,
         txncurrencycode: currencyCode,
-        txntype: type,              // "sales"
-        txninstallmentcount: installmentStr, // Peşin ise boş
-        
+        txntype: type,
+        txninstallmentcount: installmentStr,
         successurl: okUrl,
         errorurl: failUrl,
-        
-        // Garanti için güvenlik hash'i
         secure3dhash: securityHash,
-        
-        // İsteğe bağlı ama iyi olur
         lang: 'tr',
         refreshtime: '10',
-        txntimestamp: new Date().toISOString() // Log amaçlı
+        txntimestamp: new Date().toISOString()
     };
 
-    console.log('[Garanti-Wrapper] Form Hazırlandı. Hedef:', actionUrl);
     return { actionUrl, formFields };
 }
 
 /**
  * Callback Hash Doğrulama
- * Bankadan gelen yanıtın doğruluğunu kontrol eder.
  */
 export async function verifyCallbackHash(postBody) {
     try {
         const rawStoreKey = await getSecret('GARANTI_ENC_KEY');
         const storeKey = clean(rawStoreKey);
 
-        // Gelen parametreleri normalize et (Büyük/küçük harf duyarlılığı olmasın)
         const getParam = (key) => {
             const foundKey = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
-            return foundKey ? postBody[foundKey] : '';
+            return foundKey ? postBody[foundKey] : null;
         };
 
         const responseHash = getParam('hash') || getParam('secure3dhash');
         const hashParams = getParam('hashparams');
 
         if (!responseHash || !hashParams) {
-            console.warn('[Garanti-Wrapper] Hash parametreleri eksik.');
             return false;
         }
 
-        // Bankanın söylediği parametreleri sırasıyla birleştir
         const paramList = String(hashParams).split(':');
         let digestData = '';
         
         for (const param of paramList) {
             if (!param) continue;
-            // Banka bazen parametre adını, bazen değerini hashparams içinde gönderebilir
-            // Genelde hashparams "orderid:txnamount:..." gibi parametre isimlerini içerir.
             const val = getParam(param);
-            // Eğer parametre null ise hash'e eklenmez
             if (val !== null && val !== undefined) {
                 digestData += val;
             }
         }
         
-        // En sona StoreKey eklenir
         digestData += storeKey;
 
-        // Hash hesapla
         const calculatedHash = crypto.createHash('sha512')
-            .update(digestData, 'latin1') // Encoding'e dikkat
+            .update(digestData, 'latin1')
             .digest('hex')
             .toUpperCase();
 
-        const isValid = (responseHash.toUpperCase() === calculatedHash);
-        
-        if (!isValid) {
-            console.warn('[Garanti-Wrapper] Hash Uyuşmazlığı!', {
-                gelen: responseHash,
-                hesaplanan: calculatedHash,
-                string: digestData
-            });
-        }
-
-        return isValid;
+        return (responseHash.toUpperCase() === calculatedHash);
 
     } catch (e) {
-        console.error('[Garanti-Wrapper] Verify Hatası:', e);
+        console.error('Verify Error:', e);
         return false;
     }
 }
 
-/**
- * İşlem Başarılı mı?
- */
 export function isApproved(postBody) {
     const getParam = (key) => {
         const found = Object.keys(postBody).find(k => k.toLowerCase() === key.toLowerCase());
@@ -245,11 +192,8 @@ export function isApproved(postBody) {
     const procReturnCode = getParam('procreturncode');
     const response = getParam('response');
 
-    // MDStatus: 1=Tam Doğrulama, 2,3,4=Kart durumu özel durumlar (kabul edilebilir)
-    // 0, 5, 6, 7, 8, 9 = Hata
+    // OOS modelinde MDStatus dönüşü başarılı işlemler için genelde 1'dir.
     const mdOk = ['1', '2', '3', '4'].includes(String(mdStatus));
-    
-    // ProcReturnCode: 00 = Onaylandı
     const procOk = String(procReturnCode) === '00' || String(response).toLowerCase() === 'approved';
 
     return mdOk && procOk;
